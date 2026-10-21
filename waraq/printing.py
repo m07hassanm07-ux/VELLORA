@@ -1,0 +1,85 @@
+"""Explicit user-initiated printing; no shell commands or external PDF reader."""
+from __future__ import annotations
+
+from collections.abc import Callable
+from PySide6.QtCore import QRectF
+from PySide6.QtGui import QPainter
+from PySide6.QtPrintSupport import QPrinter
+import pypdfium2 as pdfium
+
+from .rendering import render_image
+
+
+class PrintCancelled(Exception):
+    pass
+
+
+def requested_pages(printer: QPrinter, count: int, current: int = 0, selected: list[int] | None = None) -> list[int]:
+    choice = printer.printRange()
+    if choice == QPrinter.PrintRange.CurrentPage:
+        pages = [current]
+    elif choice == QPrinter.PrintRange.Selection:
+        pages = sorted(set(selected or [current]))
+    elif choice == QPrinter.PrintRange.PageRange:
+        ranges = printer.pageRanges().toRangeList()
+        if ranges:
+            pages = [i for part in ranges for i in range(max(1, part.from_) - 1, min(count, part.to))]
+        else:
+            pages = list(range(max(1, printer.fromPage()) - 1, min(count, printer.toPage() or count)))
+    else:
+        pages = list(range(count))
+    pages = [i for i in pages if 0 <= i < count]
+    if printer.pageOrder() == QPrinter.PageOrder.LastPageFirst:
+        pages.reverse()
+    return pages
+
+
+def paint_pdf(printer: QPrinter, data: bytes, indexes: list[int], progress: Callable[[int, int], bool] | None = None) -> int:
+    """Fit PDF pages to printable paper at up to 300 DPI, with bounded memory.
+
+    Content is rasterized for the print job only. Saved PDFs remain vector PDFs.
+    Native printer drivers handle their supported copy/collation options.
+    """
+    if not indexes:
+        raise ValueError("لم يتم اختيار صفحات للطباعة.")
+    copies = max(1, printer.copyCount()) if not printer.supportsMultipleCopies() else 1
+    if printer.collateCopies():
+        sequence = indexes * copies
+    else:
+        sequence = [index for index in indexes for _ in range(copies)]
+    painter = QPainter()
+    if not painter.begin(printer):
+        raise RuntimeError("تعذر بدء الطباعة. تحقق من الطابعة أو مكان ملف الإخراج.")
+    try:
+        with pdfium.PdfDocument(data) as document:
+            for offset, index in enumerate(sequence):
+                if progress and not progress(offset, len(sequence)):
+                    printer.abort()
+                    raise PrintCancelled()
+                if offset and not printer.newPage():
+                    raise RuntimeError("رفضت الطابعة بدء صفحة جديدة.")
+                page = document[index]
+                try:
+                    width, height = page.get_size()
+                finally:
+                    page.close()
+                scale = min(300, printer.resolution()) / 72
+                scale = min(scale, (22_000_000 / max(width * height, 1)) ** 0.5)
+                image = render_image(document, index, scale)
+                paper = printer.pageLayout().paintRectPixels(printer.resolution())
+                ratio = min(paper.width() / image.width(), paper.height() / image.height())
+                target = QRectF((paper.width() - image.width() * ratio) / 2,
+                                (paper.height() - image.height() * ratio) / 2,
+                                image.width() * ratio, image.height() * ratio)
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                painter.drawImage(target, image)
+            if progress:
+                progress(len(sequence), len(sequence))
+    except Exception:
+        printer.abort()
+        raise
+    finally:
+        painter.end()
+    if printer.printerState() == QPrinter.PrinterState.Error:
+        raise RuntimeError("أبلغت الطابعة عن خطأ أثناء الطباعة.")
+    return len(sequence)

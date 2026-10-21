@@ -14,6 +14,7 @@ import tempfile
 import uuid
 
 from pypdf import PdfReader, PdfWriter
+from . import __version__
 
 
 class PasswordRequired(ValueError):
@@ -239,7 +240,13 @@ class Document:
                     effective = replace(overlay, text=f"{number} / {total}") if overlay.numbering else overlay
                     layer = PdfReader(BytesIO(overlay_renderer(float(page.cropbox.width), float(page.cropbox.height), effective)))
                     page.merge_translated_page(layer.pages[0], float(page.cropbox.left), float(page.cropbox.bottom), expand=False)
-        writer.add_metadata({k: v for k, v in self.metadata.items() if v} | {"/Producer": "Waraq PDF 0.1.0"})
+        # PDF 1.7 is broadly supported by desktop viewers and current browsers.
+        # This is a compatibility target, not a claim of PDF/A or PDF/UA conformance.
+        header = writer.pdf_header
+        if isinstance(header, bytes):
+            header = header.decode('ascii')
+        writer.pdf_header = max(header, "%PDF-1.7")
+        writer.add_metadata({k: v for k, v in self.metadata.items() if v} | {"/Producer": f"Waraq PDF {__version__}"})
         if password:
             writer.encrypt(password, algorithm="AES-256")
         output = BytesIO()

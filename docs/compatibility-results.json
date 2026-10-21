@@ -1,0 +1,31 @@
+{
+  "merged_three_documents": {
+    "pages": 9,
+    "bytes": 173437,
+    "text": "PDF\n\tقاّرو\n01\nﻚﺗﺎﻔﻠﻤﻟ\tأﺪﻫأ\tﺔﺣﺎﺴﻣ\nA\tcalmer\tspace\tfor\tyour\tPDFs\n.ﺎﻬﻤﻴﻈﻨﺗ\tﺪﻳﺮﺗ\tﻲﺘﻟا\tتﺎﺤﻔﺼﻟا\tﺮﺘﺧا\tﻢﺛ\t،ﻒﻠﻤﻟا\tﺢﺘﻔﺑ\tأﺪﺑا\nOPEN\t\t/\t\tORGANIZE\t\t/\t\tSAVE"
+  },
+  "web_conversion": {
+    "pages": 1,
+    "bytes": 25346,
+    "text": "PDFاﺧﺘﺒﺎر ورّاق\nWARAQ WEB CONVERSION TEST\n ﻣﺴﺘﻘﻠﺔ وﻗﺎﺑﻠﺔ ﻟﻠﺘﺒﺎدلPDFﻣﻠﻔﺎت"
+  },
+  "docx_conversion": {
+    "pages": 1,
+    "bytes": 84642,
+    "text": "WARAQ WORD CONVERSION TEST \nاختبار تحويل مستند عرب  ي مستقل.  "
+  },
+  "xlsx_conversion": {
+    "pages": 1,
+    "bytes": 86472,
+    "text": "WARAQ EXCEL CONVERSION TEST\n12345"
+  },
+  "poppler": {
+    "returncode": 0,
+    "summary": [
+      "Pages:           9",
+      "Encrypted:       no",
+      "Page size:       595 x 842 pts (A4)",
+      "PDF version:     1.7"
+    ]
+  }
+}

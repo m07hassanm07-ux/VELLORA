@@ -6,10 +6,14 @@ Waraq PDF is a new application, independent of Acrobat. There is no activation c
 
 `pypdf` assembles output page objects, annotations and basic form fields. Multiple source documents with forms receive separate field namespaces. Reordered output does not import bookmarks. `atomic_write` prepares output in the destination directory and replaces the destination only after writing, flushing and syncing it. Password-protected output uses PDF AES-256 through pypdf and cryptography.
 
-`pypdfium2` renders thumbnails and the current page, with deterministic closing of bitmap/page resources. Rasterization is only used for the preview. Save operations retain original vector/text page content unless an overlay is explicitly added; overlay generation itself is vector PDF.
+`pypdfium2` renders thumbnails, the current page and print jobs, with deterministic closing of bitmap/page resources. Print jobs fit rasterized pages to the printer's printable area at up to 300 DPI within a memory limit. Ordinary save operations retain original vector/text content, and text overlays themselves are vector PDF. Qt PrintSupport handles the printer dialog and preview.
 
 Qt handles Arabic UI layout and shapes Arabic/Latin text into PDF overlays using installed system fonts. No Microsoft font binaries are shipped. The headless rendering fallback registers installed Segoe UI/Tahoma fonts only when the offscreen Qt platform cannot enumerate fonts.
 
-The UI is deliberately single-threaded in 0.1.0; large files may block the UI during parsing/export. A future worker architecture must serialize PDFium access or use separate processes, and report cancellation/progress before accepting very large jobs.
+The UI is single-threaded in 0.2.0; large files may block the UI during parsing/export. External conversion processes are polled with progress and cancellation. A future worker architecture must serialize PDFium access or use separate processes before accepting very large jobs.
+
+`conversion.py` converts images locally and delegates Office conversion to an installed Microsoft Office application in an isolated worker process, or LibreOffice with a temporary profile. Web/HTML conversion uses an installed Chrome/Edge with a new temporary browser profile. No existing browser session or Office document is reused. `merge_dialog.py` collects and orders source PDFs before import.
+
+The NSIS installer registers per-user Open With capabilities without changing Windows UserChoice. Its generated uninstall manifest removes only known installed files. `/TESTMODE` skips registry/shortcut writes for isolated setup tests. The explicit `--self-test <folder>` helper checks the built runtime with synthetic saving, encryption, rendering and printing to PDF.
 
 Future areas: asynchronous processing, text search/selection, saveable project sessions, richer annotation placement, OCR using a separately licensed engine, direct text editing with layout-aware constraints, and digital-signature workflows. None are represented as already available.

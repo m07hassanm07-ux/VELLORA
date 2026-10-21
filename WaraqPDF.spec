@@ -10,9 +10,9 @@ datas += collect_data_files('pypdfium2_raw')
 
 a = Analysis(
     [str(ROOT / 'run.py')],
-    pathex=[str(ROOT), str(ROOT / '.deps')],
+    pathex=[str(ROOT), str(ROOT / '.deps'), str(ROOT / '.deps' / 'win32'), str(ROOT / '.deps' / 'win32' / 'lib')],
     binaries=[], datas=datas,
-    hiddenimports=['pypdf._crypt_providers._cryptography'],
+    hiddenimports=['pypdf._crypt_providers._cryptography', 'pythoncom', 'pywintypes', 'win32timezone'],
     hookspath=[], hooksconfig={}, runtime_hooks=[],
     excludes=['tkinter', 'matplotlib', 'numpy', 'pandas', 'IPython', 'PyQt5', 'PyQt6', 'PySide2'],
     noarchive=False,

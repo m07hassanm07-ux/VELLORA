@@ -10,7 +10,7 @@ if (root / ".deps").exists():
     sys.path.insert(0, str(root / ".deps"))
 destination = root / "licenses"
 destination.mkdir(exist_ok=True)
-packages = ['PySide6-Essentials', 'shiboken6', 'pypdf', 'pypdfium2', 'Pillow', 'cryptography', 'cffi', 'pycparser', 'pyinstaller']
+packages = ['PySide6-Essentials', 'shiboken6', 'pypdf', 'pypdfium2', 'Pillow', 'cryptography', 'cffi', 'pycparser', 'pyinstaller', 'pywin32']
 versions = {}
 for package in packages:
     dist = metadata.distribution(package)
@@ -29,7 +29,7 @@ for package in packages:
 runtime_license = Path(sys.base_prefix) / 'LICENSE.txt'
 if runtime_license.exists():
     shutil.copy2(runtime_license, destination / 'CPython-LICENSE.txt')
-(destination / 'dependency-versions.json').write_text(json.dumps(versions, indent=2), encoding='utf-8')
+(destination / 'dependency-versions.json').write_bytes(json.dumps(versions, indent=2).encode('utf-8'))
 (destination / 'DEPENDENCY_SOURCES.md').write_text('''# Matching dependency source references
 
 - PySide / Shiboken 6.10.3: https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.10.3-src/
@@ -41,8 +41,14 @@ if runtime_license.exists():
 - cryptography 50.0.2: https://pypi.org/project/cryptography/50.0.2/#files
 - cffi 2.1.1: https://pypi.org/project/cffi/2.1.1/#files
 - pycparser 3.11: https://pypi.org/project/pycparser/3.11/#files
+- pywin32 311: https://github.com/mhammond/pywin32/tree/b311
+- NSIS 3.12: https://sourceforge.net/projects/nsis/files/NSIS%203/3.12/
 - CPython 3.12: https://www.python.org/downloads/source/ (match the exact runtime version in build-info.json)
 
 These references identify upstream source locations. Review and meet each dependency's redistribution requirements when publishing binaries. The application source itself is MIT licensed and is provided with this release.
 ''',encoding='utf-8')
 print('Collected licenses for', ', '.join(versions))
+nsis_license=root/'.tools'/'nsis-3.12'/'COPYING'
+if nsis_license.is_file():
+    (destination/'NSIS').mkdir(exist_ok=True)
+    shutil.copy2(nsis_license,destination/'NSIS'/'COPYING')

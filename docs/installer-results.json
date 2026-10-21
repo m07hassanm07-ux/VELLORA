@@ -1,0 +1,9 @@
+{
+  "version": "0.2.0",
+  "silent_test_install": true,
+  "installed_executable_self_test": true,
+  "uninstall": true,
+  "user_document_preserved": true,
+  "registry_unchanged_in_test_mode": true,
+  "notes": "Registry registration source was reviewed; test mode intentionally does not apply real file associations or shortcuts."
+}

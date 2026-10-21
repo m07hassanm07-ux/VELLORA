@@ -9,13 +9,14 @@ import traceback
 
 from PySide6.QtCore import Qt, QSize, QTimer, Signal, QItemSelectionModel, QRect
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap
+from PySide6.QtPrintSupport import QPrinter, QPrintDialog, QPrintPreviewDialog, QAbstractPrintDialog
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QStatusBar,
-    QToolBar, QVBoxLayout, QWidget, QStyledItemDelegate, QStyle,
+    QToolBar, QVBoxLayout, QWidget, QStyledItemDelegate, QStyle, QProgressDialog,
 )
 import pypdfium2 as pdfium
 from pypdf import PdfWriter
@@ -23,6 +24,9 @@ from pypdf import PdfWriter
 from . import __version__
 from .core import Document, Overlay, PasswordRequired, atomic_write, parse_pages
 from .rendering import render_image, text_overlay, ensure_font_support
+from .printing import paint_pdf, requested_pages, PrintCancelled
+from .merge_dialog import MergeDialog
+from .conversion import convert_file, web_to_pdf, SUPPORTED_TYPES, ConversionCancelled
 
 
 STYLE = """
@@ -274,6 +278,10 @@ class MainWindow(QMainWindow):
         open_button = self.button("فتح PDF", self.open_dialog, primary=True)
         open_button.setToolTip("فتح مستند جديد · Ctrl+O")
         header_layout.addWidget(open_button)
+        header_layout.addWidget(self.button("إنشاء PDF", self.create_pdf_dialog))
+        self.print_button = self.button("طباعة", self.print_document)
+        self.print_button.setToolTip("الطباعة عبر طابعات Windows · Ctrl+P")
+        header_layout.addWidget(self.print_button)
         self.save_button = self.button("حفظ نسخة", self.save_document, primary=True)
         header_layout.addWidget(self.save_button)
         layout.addWidget(header)
@@ -282,11 +290,12 @@ class MainWindow(QMainWindow):
         tool_layout = QHBoxLayout(tools)
         tool_layout.setContentsMargins(18, 10, 18, 10)
         for key, title, handler in [
-            ("add", "إضافة / دمج", self.add_dialog),
+            ("add", "دمج ملفات", self.merge_dialog),
             ("extract", "استخراج صفحات", self.extract_pages),
             ("split", "تقسيم", self.split_document),
             ("text", "نص / علامة مائية", self.add_text),
             ("number", "ترقيم الصفحات", self.add_numbers),
+            ("web", "صفحة ويب", self.import_web),
         ]:
             self.buttons[key] = self.button(title, handler)
             tool_layout.addWidget(self.buttons[key])
@@ -443,7 +452,12 @@ class MainWindow(QMainWindow):
         for parent, key, title, shortcut, handler in [
             (files, "open", "فتح مستند…", "Ctrl+O", self.open_dialog),
             (files, "add", "إضافة ملفات…", "Ctrl+Shift+O", self.add_dialog),
+            (files, "merge", "دمج عدة ملفات…", "Ctrl+M", self.merge_dialog),
+            (files, "create", "إنشاء PDF من ملف…", "", self.create_pdf_dialog),
+            (files, "web", "إنشاء PDF من صفحة ويب…", "", self.import_web),
             (files, "save", "حفظ نسخة…", "Ctrl+S", self.save_document),
+            (files, "print", "طباعة…", "Ctrl+P", self.print_document),
+            (files, "printpreview", "معاينة الطباعة…", "Ctrl+Shift+P", self.print_preview),
             (files, "extract", "استخراج صفحات…", "Ctrl+E", self.extract_pages),
             (files, "blank", "إضافة صفحة فارغة", "Ctrl+N", self.add_blank),
             (files, "metadata", "خصائص المستند…", "", self.edit_metadata),
@@ -523,10 +537,48 @@ class MainWindow(QMainWindow):
         if paths:
             self.import_paths(paths, append=True)
 
+    def merge_dialog(self):
+        dialog = MergeDialog(self, bool(self.document.pages))
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.import_paths(dialog.paths(), append=dialog.append_current.isChecked())
+
+    def create_pdf_dialog(self):
+        filters = "الملفات المدعومة (*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp *.doc *.docx *.xls *.xlsx *.ppt *.pptx *.rtf *.txt *.odt *.ods *.odp *.html *.htm);;PDF (*.pdf);;صور (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp);;Office (*.doc *.docx *.xls *.xlsx *.ppt *.pptx *.rtf *.odt *.ods *.odp)"
+        paths, _ = QFileDialog.getOpenFileNames(self, "إنشاء PDF من ملفات", "", filters)
+        if paths:
+            self.import_paths(paths, append=bool(self.document.pages))
+
+    def conversion_progress(self, label):
+        progress = QProgressDialog(label, "إلغاء", 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        def tick():
+            QApplication.processEvents()
+            return not progress.wasCanceled()
+        return progress, tick
+
+    def import_web(self):
+        url, ok = QInputDialog.getText(self, "حفظ صفحة ويب كملف PDF", "رابط الصفحة (http أو https):\nيستخدم متصفحًا مثبتًا وملف تعريف مؤقتًا؛ لا يسجل الدخول بحسابك.")
+        if not ok or not url.strip():
+            return
+        progress, tick = self.conversion_progress("جاري تحويل صفحة الويب إلى PDF…")
+        try:
+            data = web_to_pdf(url.strip(), tick)
+            current = len(self.document.pages)
+            self.document.import_bytes("صفحة ويب.pdf", data)
+            self.refresh(current)
+        except ConversionCancelled:
+            pass
+        except Exception as exc:
+            self.error(exc)
+        finally:
+            progress.close()
+
     def import_paths(self, paths, append=False):
-        paths = [str(p) for p in paths if str(p).lower().endswith(".pdf")]
+        paths = [str(p) for p in paths if Path(p).suffix.lower() in SUPPORTED_TYPES]
         if not paths:
-            self.error("اختر ملفات بصيغة PDF.")
+            self.error("اختر ملفات PDF أو صورًا أو مستندات من الصيغ المدعومة.")
             return
         if not append and not self.confirm_discard():
             return
@@ -540,8 +592,16 @@ class MainWindow(QMainWindow):
             password = ""
             while True:
                 try:
-                    with self.busy("جاري قراءة الملف…"):
-                        source_id = target.import_pdf(path, password)
+                    if Path(path).suffix.lower() == '.pdf':
+                        with self.busy("جاري قراءة الملف…"):
+                            source_id = target.import_pdf(path, password)
+                    else:
+                        progress, tick = self.conversion_progress(f"جاري تحويل {Path(path).name}…")
+                        try:
+                            data = convert_file(path, tick)
+                            source_id = target.import_bytes(Path(path).stem + '.pdf', data, path=Path(path))
+                        finally:
+                            progress.close()
                     signed |= target.sources[source_id].signed
                     imported += 1
                     break
@@ -549,6 +609,8 @@ class MainWindow(QMainWindow):
                     password, ok = QInputDialog.getText(self, "ملف محمي", f"كلمة مرور {Path(path).name}", QLineEdit.EchoMode.Password)
                     if not ok:
                         break
+                except ConversionCancelled:
+                    break
                 except Exception as exc:
                     failures.append(f"{Path(path).name}: {exc}")
                     break
@@ -611,8 +673,9 @@ class MainWindow(QMainWindow):
         self.document_name.setText(title)
         self.setWindowTitle(f"{'● ' if self.document.dirty else ''}{title} — ورّاق PDF")
         self.save_button.setEnabled(bool(count))
+        self.print_button.setEnabled(bool(count))
         for key, button in self.buttons.items():
-            button.setEnabled(bool(count) or key == "add")
+            button.setEnabled(bool(count) or key in ("add", "web"))
         self.undo_button.setEnabled(self.document.can_undo)
         self.redo_button.setEnabled(self.document.can_redo)
         for key, action in self.actions.items():
@@ -620,7 +683,7 @@ class MainWindow(QMainWindow):
                 action.setEnabled(self.document.can_undo)
             elif key == "redo":
                 action.setEnabled(self.document.can_redo)
-            elif key not in ("open", "add", "blank", "about", "close"):
+            elif key not in ("open", "add", "blank", "about", "close", "merge", "create", "web"):
                 action.setEnabled(bool(count))
 
     def pdf_for(self, source_id):
@@ -837,6 +900,63 @@ class MainWindow(QMainWindow):
             return False
         return self.export(None)
 
+    def print_document(self):
+        if not self.document.pages:
+            return
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setResolution(300)
+        printer.setDocName(self.document_name.text())
+        printer.setFromTo(1, len(self.document.pages))
+        dialog = QPrintDialog(printer, self)
+        dialog.setMinMax(1, len(self.document.pages))
+        dialog.setOption(QAbstractPrintDialog.PrintDialogOption.PrintPageRange, True)
+        dialog.setOption(QAbstractPrintDialog.PrintDialogOption.PrintSelection, True)
+        dialog.setOption(QAbstractPrintDialog.PrintDialogOption.PrintCurrentPage, True)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        progress = QProgressDialog("جاري تجهيز الطباعة…", "إلغاء", 0, len(self.document.pages), self)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        def tick(done, total):
+            progress.setMaximum(total)
+            progress.setValue(done)
+            QApplication.processEvents()
+            return not progress.wasCanceled()
+        try:
+            with self.busy("جاري تجهيز الصفحات للطباعة…"):
+                data = self.document.build_bytes(overlay_renderer=text_overlay)
+                indexes = requested_pages(printer, len(self.document.pages), self.pages.currentRow(), self.selected())
+                count = paint_pdf(printer, data, indexes, tick)
+            self.statusBar().showMessage(f"تم إرسال {count} صفحة إلى الطابعة.", 12000)
+        except PrintCancelled:
+            self.statusBar().showMessage("تم إلغاء الطباعة. قد تكون الصفحات التي أُرسلت بالفعل في قائمة انتظار الطابعة.", 15000)
+        except Exception as exc:
+            self.error(exc)
+        finally:
+            progress.close()
+
+    def print_preview(self):
+        if not self.document.pages:
+            return
+        try:
+            with self.busy("جاري تجهيز معاينة الطباعة…"):
+                data = self.document.build_bytes(overlay_renderer=text_overlay)
+            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            printer.setResolution(150)
+            printer.setDocName(self.document_name.text())
+            dialog = QPrintPreviewDialog(printer, self)
+            dialog.setWindowTitle("معاينة الطباعة — ورّاق PDF")
+            dialog.resize(1000, 760)
+            def paint(target):
+                try:
+                    paint_pdf(target, data, list(range(len(self.document.pages))))
+                except Exception as exc:
+                    self.error(exc)
+            dialog.paintRequested.connect(paint)
+            dialog.exec()
+        except Exception as exc:
+            self.error(exc)
+
     def export(self, indexes=None):
         chosen = range(len(self.document.pages)) if indexes is None else indexes
         encrypted = any(self.document.sources[self.document.pages[i].source].reader.is_encrypted for i in chosen)
@@ -940,9 +1060,13 @@ def main():
     app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
     window = MainWindow()
     window.show()
-    arguments = [p for p in sys.argv[1:] if p.lower().endswith(".pdf")]
+    arguments = [p for p in sys.argv[1:] if not p.startswith('--') and Path(p).suffix.lower() in SUPPORTED_TYPES]
     if arguments:
-        QTimer.singleShot(0, lambda: window.import_paths(arguments))
+        def open_arguments():
+            window.import_paths(arguments)
+            if '--print' in sys.argv and window.document.pages:
+                window.print_document()
+        QTimer.singleShot(0, open_arguments)
     sys.exit(app.exec())
 
 

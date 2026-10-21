@@ -3,10 +3,12 @@ from pathlib import Path
 import hashlib,json,platform,shutil,sys,zipfile
 
 root=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(root))
+from waraq import __version__
 release=root/'release';release.mkdir(exist_ok=True)
-version='0.1.0'
+version=__version__
 source=release/f'WaraqPDF-{version}-source.zip'
-folders=['waraq','tests','scripts','docs','assets','examples','licenses']
+folders=['waraq','tests','scripts','docs','assets','examples','licenses','installer']
 files=['run.py','pyproject.toml','requirements.txt','requirements-build.txt','build.ps1','WaraqPDF.spec','README.md','LICENSE','THIRD_PARTY_NOTICES.md','CONTRIBUTING.md','SECURITY.md','.gitignore']
 with zipfile.ZipFile(source,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as archive:
     for name in files:
@@ -34,8 +36,11 @@ for path in (source,binary):
     with zipfile.ZipFile(path) as archive:
         invalid=archive.testzip()
         if invalid: raise RuntimeError('Corrupt archive member: '+invalid)
-checksums={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in [source,binary,distribution/'WaraqPDF.exe']}
+setup=release/f'WaraqPDF-{version}-Setup-x64.exe'
+outputs=[source,binary,distribution/'WaraqPDF.exe']+([setup] if setup.is_file() else [])
+checksums={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in outputs}
 (release/'SHA256SUMS.txt').write_text(''.join(f'{digest}  {name}\n' for name,digest in checksums.items()),encoding='utf-8')
-info={'application':'Waraq PDF','version':version,'build_date_local':'2026-10-21','platform':platform.platform(),'python':platform.python_version(),'license_for_original_code':'MIT','tests_passed':10,'archives':{p.name:p.stat().st_size for p in (source,binary)},'sha256':checksums,'native_packaged_check':'See native-check.txt in this directory.'}
+tests=json.loads((root/'docs'/'test-results.json').read_text(encoding='utf-8'))
+info={'application':'Waraq PDF','version':version,'build_date_local':'2026-10-21','platform':platform.platform(),'python':platform.python_version(),'license_for_original_code':'MIT','tests_passed':tests['tests_run'] if tests['passed'] else 0,'archives':{p.name:p.stat().st_size for p in (source,binary)},'sha256':checksums,'native_packaged_check':'See native-check.txt in this directory.'}
 (release/'build-info.json').write_text(json.dumps(info,indent=2),encoding='utf-8')
 print(json.dumps(info,indent=2))

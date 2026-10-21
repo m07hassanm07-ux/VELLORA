@@ -2,3 +2,4 @@ PySide6-Essentials==6.10.3
 pypdf[crypto]==6.10.0
 pypdfium2==5.14.0
 Pillow==12.3.0
+pywin32==311; sys_platform == "win32"

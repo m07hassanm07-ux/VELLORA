@@ -9,7 +9,7 @@ $buildPython = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
 & $buildPython scripts\collect_licenses.py
 if ($LASTEXITCODE -ne 0) { throw 'License collection failed.' }
-& $buildPython -m unittest discover -s tests -v
+& $buildPython scripts\run_checks.py
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
 & $buildPython -m PyInstaller WaraqPDF.spec --noconfirm
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }

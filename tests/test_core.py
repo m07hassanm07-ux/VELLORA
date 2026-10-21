@@ -82,6 +82,16 @@ class DocumentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.doc.remove([0, 1])
 
+    def test_pdf_two_header_is_not_downgraded(self):
+        writer = PdfWriter()
+        writer.add_blank_page(200, 500)
+        writer.pdf_header = '%PDF-2.0'
+        stream = BytesIO()
+        writer.write(stream)
+        doc = Document()
+        doc.import_bytes('newer.pdf', stream.getvalue())
+        self.assertTrue(doc.build_bytes().startswith(b'%PDF-2.0'))
+
     def test_encrypted_input_and_output(self):
         encrypted = fixture((200,), "input-pass")
         doc = Document()

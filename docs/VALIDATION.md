@@ -1,10 +1,10 @@
-# Validation of 0.1.0
+# Validation of 0.2.0
 
 Local validation date: 21 October 2026. Host: Windows 11 x64, Python 3.12.14.
 
 ## Automated checks
 
-Ten tests passed:
+Eighteen tests passed. The original ten scenarios remain covered:
 
 1. Page-range parsing, Arabic numerals, invalid input and range boundaries.
 2. Merge/reorder/rotate, undo/redo state and original-input immutability.
@@ -17,6 +17,8 @@ Ten tests passed:
 9. Desktop widget/preview/history initialization and encrypted-input protection defaults.
 10. Number overlays on rotated pages preserve dimensions; full exports and single-page previews use correct number contexts.
 
+Additional checks cover PDF header preservation including PDF 2.0; merging three sources; image and multi-page TIFF conversion; URL validation; print page selection, ranges and reverse order; print cancellation; printing to PDF; and initialization of the merge/create/print controls. `test-results.json` records the count and outcome.
+
 The intentionally corrupt test fixture emits pypdf parsing warnings before the test confirms rejection.
 
 ## Visual checks
@@ -24,6 +26,20 @@ The intentionally corrupt test fixture emits pypdf parsing warnings before the t
 Synthetic three-page sample `examples/welcome.pdf`, application's own Qt widget screenshots, and a separately reopened/exported page rendered using PDFium. Arabic text was visually inspected for shaping, legibility and placement.
 
 Screenshots are in `docs/screenshots/`. The sample contains no user documents or Adobe content.
+
+## Packaged runtime and installer
+
+The final frozen 0.2.0 executable passed `--self-test` with synthetic input: saving two pages, AES-256 encryption/decryption, rendering, and printing two pages to PDF. This checks the packaged Qt PrintSupport/PDFium/cryptography runtime without requiring Python on the target machine. No physical print job was sent.
+
+Setup tests use a fresh directory under `tmp/` and `/TESTMODE`, which suppresses registry and shortcut changes. The test verifies installation, runs the installed executable's diagnostics, uninstalls, and checks that user-created documents survive and known runtime files are removed. See `installer-results.json`. Registration/shortcut source was reviewed; regular installation was not applied to the user's Windows profile during testing.
+
+The test waits for both the executable and runtime directory to disappear because NSIS uninstallation continues in a child process. The uninstaller uses a known-file manifest rather than recursive deletion of the installation directory.
+
+## Interoperability
+
+Three synthetic source documents were merged to nine pages and reopened through pypdf, PDFium and Poppler. The merged PDF was opened in Chrome and its nine-page viewer and Arabic content were observed. A synthetic HTML page was converted through Chrome, and synthetic DOCX and XLSX files through installed Microsoft Office; output text and rendering were checked. See `compatibility-results.json` and `COMPATIBILITY.md`.
+
+Edge/Firefox display, PowerPoint conversion and LibreOffice conversion were not integration-tested in this round. All-printer or all-program compatibility is not claimed.
 
 ## Limits
 
