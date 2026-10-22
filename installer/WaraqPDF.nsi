@@ -15,7 +15,7 @@ SetCompressor /SOLID lzma
 BrandingText "Waraq PDF — independent open-source PDF tools"
 ShowInstDetails show
 ShowUninstDetails show
-VIProductVersion "0.2.0.0"
+VIProductVersion "0.3.0.0"
 VIAddVersionKey "ProductName" "Waraq PDF"
 VIAddVersionKey "FileDescription" "Waraq PDF Setup"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"

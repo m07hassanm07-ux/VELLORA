@@ -27,6 +27,7 @@ from .rendering import render_image, text_overlay, ensure_font_support
 from .printing import paint_pdf, requested_pages, PrintCancelled
 from .merge_dialog import MergeDialog
 from .conversion import convert_file, web_to_pdf, SUPPORTED_TYPES, ConversionCancelled
+from .editor_dialog import PageEditorDialog
 
 
 STYLE = """
@@ -279,6 +280,9 @@ class MainWindow(QMainWindow):
         open_button.setToolTip("فتح مستند جديد · Ctrl+O")
         header_layout.addWidget(open_button)
         header_layout.addWidget(self.button("إنشاء PDF", self.create_pdf_dialog))
+        self.edit_button = self.button("تعديل PDF", self.edit_page_content)
+        self.edit_button.setToolTip("تعديل نص الصفحة وإضافة النصوص والصور · Ctrl+Shift+E")
+        header_layout.addWidget(self.edit_button)
         self.print_button = self.button("طباعة", self.print_document)
         self.print_button.setToolTip("الطباعة عبر طابعات Windows · Ctrl+P")
         header_layout.addWidget(self.print_button)
@@ -465,6 +469,7 @@ class MainWindow(QMainWindow):
             (edits, "undo", "تراجع", "Ctrl+Z", self.undo),
             (edits, "redo", "إعادة", "Ctrl+Shift+Z", self.redo),
             (edits, "select", "تحديد الكل", "Ctrl+A", self.pages.selectAll),
+            (edits, "editcontent", "تعديل محتوى الصفحة…", "Ctrl+Shift+E", self.edit_page_content),
             (edits, "rotate", "تدوير الصفحات المحددة", "Ctrl+R", lambda: self.rotate(90)),
             (edits, "delete", "حذف الصفحات المحددة", "Delete", self.delete_pages),
             (edits, "cleartext", "إزالة النصوص المضافة من المحدد", "", self.clear_text),
@@ -674,6 +679,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{'● ' if self.document.dirty else ''}{title} — ورّاق PDF")
         self.save_button.setEnabled(bool(count))
         self.print_button.setEnabled(bool(count))
+        self.edit_button.setEnabled(bool(count))
         for key, button in self.buttons.items():
             button.setEnabled(bool(count) or key in ("add", "web"))
         self.undo_button.setEnabled(self.document.can_undo)
@@ -708,7 +714,7 @@ class MainWindow(QMainWindow):
         if index >= len(self.document.pages):
             return
         page = self.document.pages[index]
-        key = (page.uid, page.rotation, page.overlays, index if any(o.numbering for o in page.overlays) else -1, len(self.document.pages))
+        key = (page.uid, page.source, page.index, page.rotation, page.overlays, index if any(o.numbering for o in page.overlays) else -1, len(self.document.pages))
         try:
             if key not in self.thumbnail_cache:
                 pdf_page = self.pdf_for(page.source)[page.index]
@@ -855,6 +861,22 @@ class MainWindow(QMainWindow):
         overlay = Overlay(dialog.text.text().strip(), dialog.position.currentData(), dialog.size.value(), dialog.color.currentData(), dialog.opacity.value())
         self.document.add_overlay(indexes, overlay)
         self.refresh(indexes[0])
+
+    def edit_page_content(self):
+        if not self.document.pages:
+            return
+        index = max(0, self.pages.currentRow())
+        try:
+            with self.busy('جاري تجهيز الصفحة للتحرير…'):
+                data = self.document.build_bytes([index], overlay_renderer=text_overlay,
+                    preview_context=(index+1, len(self.document.pages)))
+                dialog = PageEditorDialog(data, self)
+            if dialog.exec() == QDialog.DialogCode.Accepted and dialog.data != dialog.initial_data:
+                self.document.replace_page(index, dialog.data)
+                self.refresh(index)
+                self.statusBar().showMessage('طُبّقت تعديلات الصفحة. اختر «حفظ نسخة» لحفظ المستند المعدّل.', 12000)
+        except Exception as exc:
+            self.error(exc)
 
     def add_numbers(self):
         if self.document.pages:

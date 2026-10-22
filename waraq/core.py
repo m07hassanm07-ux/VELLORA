@@ -168,6 +168,27 @@ class Document:
         chosen = set(indexes)
         self.pages = [replace(p, rotation=(p.rotation + degrees) % 360) if i in chosen else p for i, p in enumerate(self.pages)]
 
+    def replace_page(self, index: int, data: bytes) -> None:
+        """Install an edited single-page copy as one reversible document change."""
+        reference = self.pages[index]
+        original = self.sources[reference.source]
+        reader = PdfReader(BytesIO(data))
+        if reader.is_encrypted or len(reader.pages) != 1:
+            raise ValueError('يجب أن يكون التعديل صفحة PDF واحدة غير مشفرة.')
+        float(reader.pages[0].mediabox.width)  # validate before checkpoint
+        password = original.password if original.reader.is_encrypted else ''
+        if original.reader.is_encrypted:
+            # Keep the protected-input default even if this was the only page.
+            writer = PdfWriter(); writer.append(reader, import_outline=False)
+            writer.encrypt(password, algorithm='AES-256')
+            stream = BytesIO(); writer.write(stream); writer.close()
+            data = stream.getvalue(); reader = PdfReader(BytesIO(data)); reader.decrypt(password)
+        source_id = uuid.uuid4().hex
+        source = Source(original.name, data, reader, password, original.path)
+        self.checkpoint()
+        self.sources[source_id] = source
+        self.pages[index] = PageRef(source_id, 0, uid=reference.uid)
+
     def remove(self, indexes: list[int]) -> None:
         if len(set(indexes)) >= len(self.pages):
             raise ValueError("احتفظ بصفحة واحدة على الأقل، أو افتح مستندًا جديدًا.")

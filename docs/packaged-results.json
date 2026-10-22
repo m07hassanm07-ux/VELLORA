@@ -1,9 +1,10 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "passed": true,
   "merge_pages": 2,
   "print_pages": 2,
   "encrypted_roundtrip": true,
   "rendered": true,
-  "office_word_conversion": true
+  "text_replacement": true,
+  "editor_dialog": true
 }
