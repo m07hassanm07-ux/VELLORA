@@ -3,14 +3,15 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QImageReader, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QImageReader, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout,
     QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QSplitter, QVBoxLayout, QWidget)
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QVBoxLayout, QWidget)
 
 from .editing import edit_page, inspect_page, prepare_page
 from .rendering import render_image
+from .textlayout import group_text
 
 
 class EditCanvas(QGraphicsView):
@@ -98,9 +99,14 @@ class PageEditorDialog(QDialog):
         layout.addLayout(toolbar)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.canvas = EditCanvas(); self.canvas.region_selected.connect(self.pick_region)
-        panel = QWidget(); panel.setMaximumWidth(405); panel.setMinimumWidth(320)
+        panel = QWidget(); panel.setMaximumWidth(395); panel.setMinimumWidth(300)
         controls = QVBoxLayout(panel)
         self.status = QLabel(); self.status.setWordWrap(True); controls.addWidget(self.status)
+        self.group_mode = QComboBox()
+        for label, value in [('تحديد فقرة', 'paragraph'), ('تحديد كلمة', 'word'), ('تحديد العنصر الأصلي', 'object')]:
+            self.group_mode.addItem(label, value)
+        self.group_mode.currentIndexChanged.connect(self.reload)
+        controls.addWidget(self.group_mode)
         self.objects = QListWidget(); self.objects.setMaximumHeight(135)
         self.objects.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.objects.itemSelectionChanged.connect(self.object_selected); controls.addWidget(self.objects)
@@ -110,13 +116,16 @@ class PageEditorDialog(QDialog):
         form = QFormLayout()
         self.font = QFontComboBox(); self.font.setCurrentFont(QFont('Segoe UI'))
         self.font.currentFontChanged.connect(self.mark_pending); form.addRow('الخط', self.font)
-        self.size = QSpinBox(); self.size.setRange(4, 200); self.size.setValue(16)
+        self.size = QDoubleSpinBox(); self.size.setRange(4, 200); self.size.setDecimals(1); self.size.setValue(16)
         self.size.valueChanged.connect(self.mark_pending); form.addRow('حجم الخط', self.size)
         self.bold = QCheckBox('خط عريض'); self.bold.toggled.connect(self.mark_pending); form.addRow('', self.bold)
         self.color = QComboBox()
         for label, value in [('أسود', '#172a32'), ('أزرق', '#174b91'), ('أخضر', '#087a63'), ('أحمر', '#b62432')]:
             self.color.addItem(label, value)
         self.color.currentIndexChanged.connect(self.mark_pending); form.addRow('اللون', self.color)
+        self.alignment = QComboBox()
+        for label, value in [('تلقائي', 'auto'), ('يمين', 'right'), ('وسط', 'center'), ('يسار', 'left')]: self.alignment.addItem(label, value)
+        self.alignment.currentIndexChanged.connect(self.mark_pending); form.addRow('المحاذاة', self.alignment)
         self.geometry = []
         for label, default in [('من اليسار %', 10), ('من أعلى %', 10), ('العرض %', 70), ('الارتفاع %', 12)]:
             spin = QDoubleSpinBox(); spin.setRange(0, 100); spin.setDecimals(2); spin.setValue(default)
@@ -126,9 +135,10 @@ class PageEditorDialog(QDialog):
         self.apply_button = QPushButton('تطبيق على الصفحة'); self.apply_button.clicked.connect(self.apply_change); controls.addWidget(self.apply_button)
         self.delete_button = QPushButton('حذف المحدد'); self.delete_button.clicked.connect(self.delete_selected); controls.addWidget(self.delete_button)
         controls.addStretch()
-        hint = QLabel('استبدال النص يستخدم الخط الذي تختاره. بعض الملفات تقسّم الكلمة إلى عناصر؛ استخدم التحديد بالسحب أو Ctrl/Shift لتحديد أكثر من عنصر. الصور الممسوحة تحتاج OCR لتغيير نصها.')
+        hint = QLabel('تجميع الكلمات والفقرات تقديري. يُختار الخط الأصلي إذا كان متاحًا، وإلا يُستخدم بديل. راجع المعاينة قبل التطبيق.')
         hint.setWordWrap(True); controls.addWidget(hint)
-        splitter.addWidget(panel); splitter.addWidget(self.canvas); splitter.setStretchFactor(1, 1)
+        scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(panel);scroll.setMinimumWidth(330);scroll.setMaximumWidth(415)
+        splitter.addWidget(scroll); splitter.addWidget(self.canvas); splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText('إنهاء التعديل')
@@ -139,6 +149,7 @@ class PageEditorDialog(QDialog):
     def reload(self):
         self.loading = True
         self.width, self.height, self.entries = inspect_page(self.data)
+        self.entries = group_text(self.data, self.entries, self.group_mode.currentData())
         self.objects.clear()
         for entry in self.entries:
             label = ('نص: ' + (entry.text.replace('\n', ' ')[:90] or 'نص غير قابل للاستخراج')) if entry.kind == 'text' else 'صورة'
@@ -155,7 +166,10 @@ class PageEditorDialog(QDialog):
         return [self.entries[self.objects.row(item)] for item in self.objects.selectedItems()]
 
     def selected_indexes(self):
-        return [entry.index for entry in self.selected_entries()]
+        return list(dict.fromkeys(index for entry in self.selected_entries() for index in (entry.indices or (entry.index,))))
+
+    def selected_chars(self):
+        return tuple(dict.fromkeys(index for entry in self.selected_entries() for index in entry.chars))
 
     def set_rect(self, rect):
         self.loading = True
@@ -200,8 +214,20 @@ class PageEditorDialog(QDialog):
         text_entries = [entry for entry in selected if entry.kind == 'text']
         self.text.setPlainText(''.join(entry.text for entry in text_entries))
         if text_entries:
-            size = max(4, min(200, round(text_entries[0].size)))
+            sample = text_entries[0]
+            size = max(4, min(200, sample.size))
             self.size.setValue(size)
+            family = sample.family.split('+')[-1]
+            aliases = {'Helvetica': 'Arial', 'Times-Roman': 'Times New Roman', 'Courier': 'Courier New'}
+            family = aliases.get(family, family)
+            available = {name.casefold(): name for name in QFontDatabase.families()}
+            family = available.get(family.casefold(), 'Segoe UI')
+            self.font.setCurrentFont(QFont(family)); self.bold.setChecked(sample.bold)
+            color_index = self.color.findData(sample.color)
+            if color_index < 0:
+                self.color.addItem('اللون الأصلي', sample.color); color_index = self.color.count()-1
+            self.color.setCurrentIndex(color_index)
+            self.alignment.setCurrentIndex(max(0, self.alignment.findData(sample.alignment)))
             # Glyph bounds exclude font ascenders/line leading; reserve room for
             # a complete newly shaped line. The exact box remains user-editable.
             bounds.setTop(max(0, bounds.top()-size*.25))
@@ -269,7 +295,8 @@ class PageEditorDialog(QDialog):
         return edit_page(self.data, indexes, text=None if self.mode == 'image' else self.text.toPlainText(),
             image=self.image if self.mode == 'image' else None,
             rect=(rect.x(), rect.y(), rect.width(), rect.height()), size=self.size.value(),
-            family=self.font.currentFont().family(), color=self.color.currentData(), bold=self.bold.isChecked())
+            family=self.font.currentFont().family(), color=self.color.currentData(), bold=self.bold.isChecked(),
+            alignment=self.alignment.currentData(), selected_chars=self.selected_chars() if self.mode == 'select' else None)
 
     def preview_change(self):
         try:
@@ -292,7 +319,7 @@ class PageEditorDialog(QDialog):
         indexes = self.selected_indexes()
         if indexes:
             try:
-                self.commit(edit_page(self.data, indexes))
+                self.commit(edit_page(self.data, indexes, selected_chars=self.selected_chars() or None))
             except Exception as exc:
                 QMessageBox.warning(self, 'تعذر الحذف', str(exc))
 

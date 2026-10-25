@@ -13,6 +13,7 @@ import pypdfium2 as pdfium
 from waraq.core import Document, Overlay
 from waraq.rendering import render_image, text_overlay
 from waraq.app import MainWindow, SaveDialog
+from qt_helpers import wait_for
 
 
 class RenderingTests(unittest.TestCase):
@@ -55,11 +56,13 @@ class RenderingTests(unittest.TestCase):
         window = MainWindow()
         window.add_blank()
         window.render_current()
+        wait_for(lambda:window.reading_key==(window.document.pages[0],1))
         self.assertEqual(window.pages.count(), 1)
         self.assertFalse(window.image_label.pixmap().isNull())
         window.document.add_overlay([0], Overlay("اختبار", "center"))
         window.refresh()
         window.render_current()
+        wait_for(lambda:window.reading_key==(window.document.pages[0],1))
         self.assertFalse(window.image_label.pixmap().isNull())
         window.rotate(90)
         self.assertEqual(window.document.pages[0].rotation, 90)

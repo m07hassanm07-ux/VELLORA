@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 import os
 import tempfile
+import time
 import uuid
 
 from pypdf import PdfReader, PdfWriter
@@ -88,7 +89,16 @@ def atomic_write(path: Path | str, data: bytes) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        # Real-time scanners can briefly hold a freshly flushed temporary file
+        # on Windows. Keep the write atomic while tolerating that short lock.
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(.025 * (attempt + 1))
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -189,6 +199,22 @@ class Document:
         self.sources[source_id] = source
         self.pages[index] = PageRef(source_id, 0, uid=reference.uid)
 
+    def replace_document(self, data: bytes, name='مستند معالج.pdf') -> None:
+        """Apply a multi-page transformation as one undoable transaction."""
+        reader = PdfReader(BytesIO(data))
+        if reader.is_encrypted or len(reader.pages) != len(self.pages):
+            raise ValueError('نتيجة المعالجة لا تطابق صفحات المستند.')
+        for page in reader.pages: float(page.mediabox.width)
+        protected = next((self.sources[p.source] for p in self.pages if self.sources[p.source].reader.is_encrypted), None)
+        password = protected.password if protected else ''
+        if protected:
+            writer = PdfWriter(); writer.append(reader, import_outline=False); writer.encrypt(password, algorithm='AES-256')
+            stream=BytesIO(); writer.write(stream); writer.close(); data=stream.getvalue()
+            reader=PdfReader(BytesIO(data)); reader.decrypt(password)
+        sid=uuid.uuid4().hex; source=Source(name,data,reader,password)
+        pages=[PageRef(sid,i,uid=p.uid) for i,p in enumerate(self.pages)]
+        self.checkpoint(); self.sources[sid]=source; self.pages=pages
+
     def remove(self, indexes: list[int]) -> None:
         if len(set(indexes)) >= len(self.pages):
             raise ValueError("احتفظ بصفحة واحدة على الأقل، أو افتح مستندًا جديدًا.")
@@ -229,7 +255,7 @@ class Document:
         self.checkpoint()
         self.metadata.update({"/Title": title, "/Author": author})
 
-    def build_bytes(self, indexes: list[int] | None = None, password: str = "", overlay_renderer: OverlayRenderer | None = None, preview_context: tuple[int, int] | None = None) -> bytes:
+    def build_bytes(self, indexes: list[int] | None = None, password: str = "", overlay_renderer: OverlayRenderer | None = None, preview_context: tuple[int, int] | None = None, progress=None) -> bytes:
         indexes = list(range(len(self.pages))) if indexes is None else indexes
         if not indexes:
             raise ValueError("لا توجد صفحات للحفظ.")
@@ -246,6 +272,7 @@ class Document:
                 reader.add_form_topname("document_" + source_id[:8])
             export_readers[source_id] = reader
         for output_index, index in enumerate(indexes):
+            if progress:progress(output_index,len(indexes),f'جاري تجهيز الصفحة {output_index+1} من {len(indexes)}…')
             reference = self.pages[index]
             reader = export_readers[reference.source]
             writer.append(reader, pages=[reference.index], import_outline=False)

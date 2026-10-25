@@ -26,7 +26,10 @@ data = edit_page(data, text='مستند تجريبي للتحرير', rect=(35, 
 data = edit_page(data, text='ORIGINAL CONTENT', rect=(40, 165, 500, 50), size=20)
 data = edit_page(data, text='هذه الفقرة تبقى كما هي بعد تعديل النص أعلاه.', rect=(40, 320, 500, 65), size=17)
 out = root/'docs'/'screenshots'; out.mkdir(exist_ok=True)
-dialog = PageEditorDialog(data); dialog.show(); app.processEvents()
+dialog = PageEditorDialog(data); dialog.resize(1180, 820); dialog.show(); app.processEvents()
+# The synthetic Qt text uses an embedded subset font, so exercise the safe
+# whole-object path while the automated suite covers partial standard-font edits.
+dialog.group_mode.setCurrentIndex(2); app.processEvents()
 dialog.pick_region(QRectF(30, 150, 520, 80))
 assert dialog.selected_indexes()
 dialog.text.setPlainText('المحتوى المعدّل — EDITED PDF')

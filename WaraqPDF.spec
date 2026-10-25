@@ -7,6 +7,7 @@ datas = [(str(ROOT / name), '.') for name in ('LICENSE', 'README.md', 'THIRD_PAR
 if (ROOT / 'licenses').exists():
     datas.append((str(ROOT / 'licenses'), 'licenses'))
 datas += collect_data_files('pypdfium2_raw')
+datas.append((str(ROOT / 'assets' / 'ocr'), 'ocr-data'))
 
 a = Analysis(
     [str(ROOT / 'run.py')],

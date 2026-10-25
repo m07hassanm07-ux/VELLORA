@@ -1,0 +1,17 @@
+{
+  "recognized": [
+    {
+      "page": 0,
+      "text": "WARAQ OCR TEST 12345\n\nمرحبا بكم في تجربة قراءة النص العربي\n"
+    }
+  ],
+  "skipped": [],
+  "language": "ara+eng",
+  "engine_languages": [
+    "ara",
+    "eng"
+  ],
+  "english_search": true,
+  "arabic_extracted": true,
+  "visual_pixels_unchanged": true
+}

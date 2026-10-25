@@ -6,9 +6,10 @@ from pathlib import Path
 import math
 import sys
 import traceback
+import os
 
-from PySide6.QtCore import Qt, QSize, QTimer, Signal, QItemSelectionModel, QRect
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap
+from PySide6.QtCore import Qt, QSize, QTimer, Signal, QItemSelectionModel, QRect, QSettings
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog, QPrintPreviewDialog, QAbstractPrintDialog
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
@@ -28,6 +29,12 @@ from .printing import paint_pdf, requested_pages, PrintCancelled
 from .merge_dialog import MergeDialog
 from .conversion import convert_file, web_to_pdf, SUPPORTED_TYPES, ConversionCancelled
 from .editor_dialog import PageEditorDialog
+from .reading import PageImage, SearchDock, OcrDialog, ReviewDock
+from .textlayout import Glyph, character_map, find_matches, normal_text, select_region
+from .ocr import find_tesseract, run_ocr, JobCancelled
+from .projects import snapshot, restore, encode_snapshot, decode_snapshot, RecoveryStore, LOCKED
+from .tasks import TaskThread,run_task,process_job
+from .render_service import ProcessRenderer
 
 
 STYLE = """
@@ -226,6 +233,11 @@ class MainWindow(QMainWindow):
         self.fit_mode = True
         self.rebuilding = False
         self.last_output: Path | None = None
+        self.project_path=None;self.project_password='';self.recovery=RecoveryStore();self._autosave_fingerprint=None
+        self.reading_key = None; self.current_glyphs = []; self.selected_text = ''
+        self.renderer=ProcessRenderer(self);self._view_serial=0;self._thumb_inflight=False;self._autosave_thread=None
+        self.selection_rects = []; self.selection_char_ids = []; self.search_matches = []; self.pending_match = None
+        self.review_annotations=[];self._stamp_label='للمراجعة'
         self.resize(1320, 850)
         self.setMinimumSize(980, 650)
         self.setWindowTitle("ورّاق PDF | Waraq PDF")
@@ -243,6 +255,15 @@ class MainWindow(QMainWindow):
         self.thumb_queue: list[int] = []
         self.make_ui()
         self.make_menu()
+        self.search_dock = SearchDock(self)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.search_dock); self.search_dock.hide()
+        self.search_dock.search_requested.connect(self.search_document)
+        self.search_dock.match_selected.connect(self.show_search_match)
+        self.review_dock=ReviewDock(self);self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,self.review_dock);self.review_dock.hide()
+        self.review_dock.tool_requested.connect(self.begin_review);self.review_dock.selected.connect(self.select_review)
+        self.review_dock.edit_requested.connect(self.edit_review);self.review_dock.delete_requested.connect(self.delete_review)
+        self.autosave_timer=QTimer(self);self.autosave_timer.setInterval(30000);self.autosave_timer.timeout.connect(self.autosave_now)
+        if QApplication.platformName()!='offscreen' or os.environ.get('WARAQ_DATA_DIR'):self.autosave_timer.start()
         self.refresh()
 
     def brand_icon(self):
@@ -431,6 +452,8 @@ class MainWindow(QMainWindow):
         bar_layout.addWidget(self.zoom_label)
         bar_layout.addWidget(self.button("+", lambda: self.change_zoom(1.25)))
         bar_layout.addWidget(self.button("ملاءمة العرض", self.fit_page))
+        bar_layout.addWidget(self.button('بحث',self.open_search))
+        bar_layout.addWidget(self.button('مراجعة',self.open_review))
         layout.addWidget(bar)
         self.preview = PreviewArea()
         self.preview.setWidgetResizable(True)
@@ -440,7 +463,10 @@ class MainWindow(QMainWindow):
         preview_layout = QVBoxLayout(self.preview_surface)
         preview_layout.setContentsMargins(30, 26, 30, 26)
         preview_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        self.image_label = QLabel(objectName="pageImage")
+        self.image_label = PageImage(objectName="pageImage")
+        self.image_label.region_selected.connect(self.select_page_text)
+        self.image_label.clear_requested.connect(self.clear_text_selection)
+        self.image_label.placement.connect(self.place_review)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview_layout.addWidget(self.image_label)
         self.preview.setWidget(self.preview_surface)
@@ -452,9 +478,13 @@ class MainWindow(QMainWindow):
         files = menu.addMenu("ملف")
         edits = menu.addMenu("تحرير")
         view = menu.addMenu("عرض")
+        tools = menu.addMenu('أدوات')
+        review = menu.addMenu('مراجعة')
         help_menu = menu.addMenu("مساعدة")
         for parent, key, title, shortcut, handler in [
             (files, "open", "فتح مستند…", "Ctrl+O", self.open_dialog),
+            (files, 'openproject', 'فتح مشروع ورّاق…', 'Ctrl+Alt+O', self.open_project),
+            (files, 'saveproject', 'حفظ مشروع للاستكمال…', 'Ctrl+Shift+S', self.save_project),
             (files, "add", "إضافة ملفات…", "Ctrl+Shift+O", self.add_dialog),
             (files, "merge", "دمج عدة ملفات…", "Ctrl+M", self.merge_dialog),
             (files, "create", "إنشاء PDF من ملف…", "", self.create_pdf_dialog),
@@ -470,11 +500,20 @@ class MainWindow(QMainWindow):
             (edits, "redo", "إعادة", "Ctrl+Shift+Z", self.redo),
             (edits, "select", "تحديد الكل", "Ctrl+A", self.pages.selectAll),
             (edits, "editcontent", "تعديل محتوى الصفحة…", "Ctrl+Shift+E", self.edit_page_content),
+            (edits, "copytext", "نسخ النص المحدد", "Ctrl+C", self.copy_selected_text),
+            (edits, "copypage", "نسخ نص الصفحة", "Ctrl+Shift+C", self.copy_page_text),
+            (edits, "search", "بحث داخل المستند…", "Ctrl+F", self.open_search),
             (edits, "rotate", "تدوير الصفحات المحددة", "Ctrl+R", lambda: self.rotate(90)),
             (edits, "delete", "حذف الصفحات المحددة", "Delete", self.delete_pages),
             (edits, "cleartext", "إزالة النصوص المضافة من المحدد", "", self.clear_text),
             (view, "fit", "ملاءمة العرض", "Ctrl+0", self.fit_page),
             (view, "zoom", "الحجم الطبيعي", "Ctrl+1", self.actual_size),
+            (tools, 'ocr', 'التعرف على النص OCR…', '', self.ocr_document),
+            (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
+            (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
+            (review,'note','إضافة ملاحظة','Ctrl+Shift+N',lambda:self.begin_review('note')),
+            (review,'arrow','رسم سهم','',lambda:self.begin_review('arrow')),
+            (review,'stamp','إضافة ختم','',lambda:self.begin_review('stamp')),
             (help_menu, "about", "عن ورّاق PDF…", "", self.about),
         ]:
             action = QAction(title, self)
@@ -519,6 +558,7 @@ class MainWindow(QMainWindow):
         return result == QMessageBox.StandardButton.Discard
 
     def close_pdfs(self):
+        self.renderer.close();self._thumb_inflight=False;self._view_serial+=1
         for pdf in self.pdfs.values():
             pdf.close()
         self.pdfs.clear()
@@ -530,7 +570,79 @@ class MainWindow(QMainWindow):
         self.close_pdfs()
         self.document = Document()
         self.last_output = None
+        self.clear_recovery();self.project_path=None;self.project_password='';self._autosave_fingerprint=None
         self.refresh()
+
+    def autosave_now(self):
+        if self._autosave_thread and self._autosave_thread.isRunning():return
+        if not self.document.pages or not self.document.dirty:
+            self.recovery.clear();self._autosave_fingerprint=None;return
+        fingerprint=self.document.fingerprint()
+        if fingerprint==self._autosave_fingerprint:return
+        state=snapshot(self.document);store=self.recovery
+        thread=TaskThread(lambda report,cancelled:store.write(state),self);self._autosave_thread=thread
+        def saved(_):
+            if self.document.fingerprint()==fingerprint:self._autosave_fingerprint=fingerprint
+            self.statusBar().showMessage('حُفظت نسخة استعادة محلية مشفرة.',4000)
+        def done():
+            if self._autosave_thread is thread:self._autosave_thread=None
+            thread.deleteLater()
+        thread.succeeded.connect(saved);thread.failed.connect(lambda _:self.statusBar().showMessage('تعذر الحفظ التلقائي. احفظ المشروع يدويًا.',10000))
+        thread.finished.connect(done);thread.start()
+
+    def clear_recovery(self):
+        if self._autosave_thread and self._autosave_thread.isRunning():self._autosave_thread.wait()
+        self.recovery.clear();self._autosave_fingerprint=None
+
+    def save_project(self):
+        if not self.document.pages:return False
+        path,_=QFileDialog.getSaveFileName(self,'حفظ مشروع ورّاق',str(self.project_path or 'مشروع.waraq'),'Waraq project (*.waraq)')
+        if not path:return False
+        if not path.lower().endswith('.waraq'):
+            path+='.waraq'
+            if Path(path).exists() and QMessageBox.question(self,'ملف موجود','المشروع موجود بالفعل. هل تريد استبداله؟',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return False
+        password,ok=QInputDialog.getText(self,'حماية المشروع','كلمة مرور للمشروع (اختيارية، وإلزامية عند وجود مصادر PDF محمية):',QLineEdit.EchoMode.Password,text=self.project_password)
+        if not ok:return False
+        try:
+            state=snapshot(self.document)
+            def save(report,cancelled):
+                report(0,0,'جاري حفظ المشروع ومصادره…');data=encode_snapshot(state,password=password)
+                if cancelled():raise JobCancelled()
+                atomic_write(path,data)
+            run_task(self,'حفظ المشروع',save)
+            self.project_path=Path(path);self.project_password=password;self.document.mark_saved();self.clear_recovery();self.update_status()
+            self.statusBar().showMessage('حُفظ المشروع مع مصادره وسجل التراجع. يمكنك استكماله لاحقًا.',10000);return True
+        except JobCancelled:return False
+        except Exception as exc:self.error(exc);return False
+
+    def open_project(self,path=None):
+        if isinstance(path,bool):path=None
+        if not path:
+            path,_=QFileDialog.getOpenFileName(self,'فتح مشروع ورّاق','','Waraq project (*.waraq)')
+        if not path or not self.confirm_discard():return
+        try:
+            data=Path(path).read_bytes();password=''
+            if data.startswith(LOCKED):
+                password,ok=QInputDialog.getText(self,'مشروع محمي','كلمة مرور المشروع:',QLineEdit.EchoMode.Password)
+                if not ok:return
+            document=run_task(self,'فتح المشروع',lambda report,cancelled:restore(decode_snapshot(data,password)));document.mark_saved()
+            self.close_pdfs();self.clear_recovery();self.document=document;self.project_path=Path(path);self.project_password=password;self.last_output=None
+            self._autosave_fingerprint=None;self.refresh()
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc)
+
+    def offer_recovery(self):
+        try:
+            candidates=self.recovery.candidates()
+            if not candidates:return
+            path=candidates[0]
+            answer=QMessageBox.question(self,'استعادة العمل','توجد جلسة لم تُغلق بصورة طبيعية. هل تريد استعادة آخر نسخة محفوظة تلقائيًا؟',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.Yes)
+            if answer!=QMessageBox.StandardButton.Yes:return
+            if not self.confirm_discard():return
+            document=restore(decode_snapshot(path.read_bytes()))
+            self.close_pdfs();self.document=document;self.recovery.path=path;self.recovery.session=path.stem
+            self._autosave_fingerprint=None;self.project_path=None;self.project_password='';self.last_output=None;self.refresh();self.autosave_now()
+        except Exception as exc:self.error(f'تعذر استعادة الجلسة: {exc}')
 
     def open_dialog(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "فتح مستندات PDF", "", "PDF (*.pdf)")
@@ -567,18 +679,15 @@ class MainWindow(QMainWindow):
         url, ok = QInputDialog.getText(self, "حفظ صفحة ويب كملف PDF", "رابط الصفحة (http أو https):\nيستخدم متصفحًا مثبتًا وملف تعريف مؤقتًا؛ لا يسجل الدخول بحسابك.")
         if not ok or not url.strip():
             return
-        progress, tick = self.conversion_progress("جاري تحويل صفحة الويب إلى PDF…")
         try:
-            data = web_to_pdf(url.strip(), tick)
+            data=self.document_job('تحويل صفحة الويب','web',{'url':url.strip()})['data']
             current = len(self.document.pages)
             self.document.import_bytes("صفحة ويب.pdf", data)
             self.refresh(current)
-        except ConversionCancelled:
+        except (ConversionCancelled,JobCancelled):
             pass
         except Exception as exc:
             self.error(exc)
-        finally:
-            progress.close()
 
     def import_paths(self, paths, append=False):
         paths = [str(p) for p in paths if Path(p).suffix.lower() in SUPPORTED_TYPES]
@@ -597,16 +706,11 @@ class MainWindow(QMainWindow):
             password = ""
             while True:
                 try:
-                    if Path(path).suffix.lower() == '.pdf':
-                        with self.busy("جاري قراءة الملف…"):
-                            source_id = target.import_pdf(path, password)
-                    else:
-                        progress, tick = self.conversion_progress(f"جاري تحويل {Path(path).name}…")
-                        try:
-                            data = convert_file(path, tick)
-                            source_id = target.import_bytes(Path(path).stem + '.pdf', data, path=Path(path))
-                        finally:
-                            progress.close()
+                    empty=snapshot(Document())
+                    result=run_task(self,'فتح '+Path(path).name,lambda report,cancelled:process_job(empty,'import',{'path':path,'password':password},report,cancelled))
+                    if result.get('needs_password'):raise PasswordRequired()
+                    name=Path(path).name if Path(path).suffix.lower()=='.pdf' else Path(path).stem+'.pdf'
+                    source_id=target.import_bytes(name,result['data'],password,path=Path(path))
                     signed |= target.sources[source_id].signed
                     imported += 1
                     break
@@ -614,7 +718,7 @@ class MainWindow(QMainWindow):
                     password, ok = QInputDialog.getText(self, "ملف محمي", f"كلمة مرور {Path(path).name}", QLineEdit.EchoMode.Password)
                     if not ok:
                         break
-                except ConversionCancelled:
+                except (ConversionCancelled,JobCancelled):
                     break
                 except Exception as exc:
                     failures.append(f"{Path(path).name}: {exc}")
@@ -622,6 +726,7 @@ class MainWindow(QMainWindow):
         if imported:
             if not append:
                 self.close_pdfs()
+                self.clear_recovery();self.project_path=None;self.project_password='';self._autosave_fingerprint=None
                 self.document = target
                 self.last_output = None
                 if imported == 1:
@@ -639,6 +744,11 @@ class MainWindow(QMainWindow):
         return indexes
 
     def refresh(self, current=0, selected_ids=None):
+        self.reading_key = None; self.current_glyphs = []; self.clear_text_selection()
+        self.pending_match = None; self.search_matches = []
+        self.review_annotations=[];self.image_label.review_rects=[];self.image_label.tool='select'
+        if hasattr(self,'review_dock'):self.review_dock.set_annotations([])
+        if hasattr(self,'search_dock'): self.search_dock.results.clear()
         self.rebuilding = True
         self.thumb_timer.stop()
         self.pages.clear()
@@ -689,7 +799,7 @@ class MainWindow(QMainWindow):
                 action.setEnabled(self.document.can_undo)
             elif key == "redo":
                 action.setEnabled(self.document.can_redo)
-            elif key not in ("open", "add", "blank", "about", "close", "merge", "create", "web"):
+            elif key not in ("open", "openproject", "add", "blank", "about", "close", "merge", "create", "web"):
                 action.setEnabled(bool(count))
 
     def pdf_for(self, source_id):
@@ -707,6 +817,7 @@ class MainWindow(QMainWindow):
         return render_image(self.pdf_for(page.source), page.index, scale, page.rotation)
 
     def next_thumbnail(self):
+        if self._thumb_inflight:return
         if not self.thumb_queue:
             self.thumb_timer.stop()
             return
@@ -716,21 +827,18 @@ class MainWindow(QMainWindow):
         page = self.document.pages[index]
         key = (page.uid, page.source, page.index, page.rotation, page.overlays, index if any(o.numbering for o in page.overlays) else -1, len(self.document.pages))
         try:
-            if key not in self.thumbnail_cache:
-                pdf_page = self.pdf_for(page.source)[page.index]
-                try:
-                    width, height = pdf_page.get_size()
-                finally:
-                    pdf_page.close()
-                if page.rotation in (90, 270):
-                    width, height = height, width
-                scale = min(128 / max(width, 1), 166 / max(height, 1))
-                self.thumbnail_cache[key] = QIcon(QPixmap.fromImage(self.page_image(index, scale)))
-                if len(self.thumbnail_cache) > 350:
-                    self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
-            item = self.pages.item(index)
-            if item:
-                item.setIcon(self.thumbnail_cache[key])
+            if key in self.thumbnail_cache:
+                self.pages.item(index).setIcon(self.thumbnail_cache[key]);return
+            width,height=self.display_size(page);scale=min(128/max(width,1),166/max(height,1))
+            self._thumb_inflight=True;self.thumb_timer.stop()
+            def completed(meta,png):
+                self._thumb_inflight=False
+                if not meta.get('error'):
+                    image=QImage.fromData(png,'PNG');self.thumbnail_cache[key]=QIcon(QPixmap.fromImage(image))
+                    if len(self.thumbnail_cache)>350:self.thumbnail_cache.pop(next(iter(self.thumbnail_cache)))
+                    if index<len(self.document.pages) and self.document.pages[index]==page:self.pages.item(index).setIcon(self.thumbnail_cache[key])
+                if self.thumb_queue:self.thumb_timer.start()
+            self.renderer.submit(self.document.sources[page.source],page,scale,completed,index=index,total=len(self.document.pages))
         except Exception:
             # A failed thumbnail must not prevent saving or manipulating the document.
             pass
@@ -745,32 +853,173 @@ class MainWindow(QMainWindow):
             return
         try:
             page = self.document.pages[index]
-            pdf_page = self.pdf_for(page.source)[page.index]
-            try:
-                width, height = pdf_page.get_size()
-            finally:
-                pdf_page.close()
-            if page.rotation in (90, 270):
-                width, height = height, width
+            width,height=self.display_size(page)
             scale = self.zoom * 96 / 72
             if self.fit_mode:
                 scale = max(0.1, (self.preview.viewport().width() - 72) / max(width, 1))
                 self.zoom = scale * 72 / 96
             # Cap render allocation while retaining document quality in saved files.
             scale = min(scale, 2600 / max(width, height, 1))
-            image = self.page_image(index, scale)
-            pixmap = QPixmap.fromImage(image)
-            self.image_label.setPixmap(pixmap)
-            self.image_label.setFixedSize(pixmap.size())
-            self.zoom_label.setText(f"{round(self.zoom * 100)}%")
-            self.page_number.blockSignals(True)
-            self.page_number.setValue(index + 1)
-            self.page_number.blockSignals(False)
-            self.update_status()
+            key=(page,len(self.document.pages))
+            if self.reading_key != key:
+                self.current_glyphs=[];self.clear_text_selection();self.image_label.clear();self.image_label.setText('جاري عرض الصفحة…')
+            self._view_serial+=1;serial=self._view_serial
+            def completed(meta,png):
+                if serial!=self._view_serial or index!=self.pages.currentRow() or index>=len(self.document.pages) or self.document.pages[index]!=page:return
+                if meta.get('error'):
+                    self.image_label.setText('تعذر عرض الصفحة');self.status_label.setText(meta['error']);return
+                image=QImage.fromData(png,'PNG');pixmap=QPixmap.fromImage(image)
+                self.image_label.setPixmap(pixmap);self.image_label.setFixedSize(pixmap.size());self.image_label.ratio=scale
+                changed=self.reading_key!=key
+                self.current_glyphs=[Glyph(g['index'],g['text'],tuple(g['rect']),g['object_index']) for g in meta['glyphs']]
+                self.reading_key=key
+                if changed:
+                    self.review_annotations=meta.get('annotations',[]);self.review_dock.set_annotations(self.review_annotations)
+                self.image_label.search_rects=self.pending_match[1] if self.pending_match and self.pending_match[0]==index else []
+                self.image_label.update();self.zoom_label.setText(f'{round(self.zoom*100)}%')
+                self.page_number.blockSignals(True);self.page_number.setValue(index+1);self.page_number.blockSignals(False);self.update_status()
+            self.renderer.submit(self.document.sources[page.source],page,scale,completed,reading=True,index=index,total=len(self.document.pages))
         except Exception as exc:
             self.image_label.clear()
             self.image_label.setText("تعذر عرض هذه الصفحة")
             self.status_label.setText(f"تعذر عرض الصفحة: {exc}")
+
+    def display_size(self,reference):
+        page=self.document.sources[reference.source].reader.pages[reference.index]
+        unit=float(page.get('/UserUnit',1));width,height=float(page.cropbox.width)*unit,float(page.cropbox.height)*unit
+        return (height,width) if (page.rotation+reference.rotation)%180 else (width,height)
+
+    def document_job(self,label,kind,params):
+        state=snapshot(self.document,history=False)
+        return run_task(self,label,lambda report,cancelled:process_job(state,kind,params,report,cancelled))
+
+    def write_pdf_background(self,path,indexes,password):
+        state=snapshot(self.document,history=False)
+        def save(report,cancelled):
+            result=process_job(state,'assemble',{'indexes':indexes,'password':password},report,cancelled)
+            report(0,0,'جاري حفظ النسخة…')
+            if cancelled():raise JobCancelled()
+            atomic_write(path,result['data'])
+        return run_task(self,'حفظ PDF',save)
+
+    def clear_text_selection(self):
+        self.selected_text='';self.selection_rects=[];self.selection_char_ids=[]
+        if hasattr(self,'image_label'):
+            self.image_label.selected_rects=[];self.image_label.update()
+
+    def select_page_text(self,rect):
+        self.selected_text,self.selection_rects,self.selection_char_ids=select_region(self.current_glyphs,(rect.x(),rect.y(),rect.width(),rect.height()))
+        self.image_label.selected_rects=self.selection_rects;self.image_label.update()
+        self.statusBar().showMessage(f'{len(self.selected_text)} حرف محدد — Ctrl+C للنسخ' if self.selected_text else 'لا يوجد نص في هذا التحديد. قد تحتاج الصفحة المصورة إلى OCR.',10000)
+
+    def copy_selected_text(self):
+        if self.selected_text:
+            QApplication.clipboard().setText(self.selected_text);self.statusBar().showMessage('نُسخ النص المحدد.',5000)
+
+    def copy_page_text(self):
+        text=normal_text(''.join(g.text for g in self.current_glyphs))
+        if text.strip():QApplication.clipboard().setText(text);self.statusBar().showMessage('نُسخ نص الصفحة.',5000)
+        else:self.statusBar().showMessage('لا يوجد نص قابل للنسخ. استخدم OCR للصفحات المصورة.',10000)
+
+    def open_search(self):
+        self.review_dock.hide()
+        self.search_dock.show();self.search_dock.raise_();self.search_dock.query.setFocus();self.search_dock.query.selectAll()
+
+    def open_review(self):
+        self.search_dock.hide();self.review_dock.show();self.review_dock.raise_()
+
+    def begin_review(self,kind):
+        if not self.document.pages:return
+        self.open_review()
+        if kind=='highlight':
+            if not self.selection_rects:
+                self.statusBar().showMessage('حدد النص بالسحب على الصفحة أولًا ثم اختر «تمييز».',12000);return
+            self.apply_review_action('highlight',{'rects':self.selection_rects,'text':self.selected_text,'color':'#ffdc20'});return
+        if kind=='stamp':
+            label,ok=QInputDialog.getItem(self,'نص الختم','اختر الختم أو اكتب نصًا قصيرًا:',['معتمد','للمراجعة','مسودة','سري'],0,True)
+            if not ok or not label.strip():return
+            self._stamp_label=label.strip()[:60]
+        self.image_label.tool=kind;self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+        self.statusBar().showMessage('انقر مكان الملاحظة على الصفحة.' if kind=='note' else 'اسحب على الصفحة لتحديد موضع السهم أو الختم. Esc للإلغاء.',15000)
+
+    def place_review(self,gesture):
+        kind=gesture['tool'];self.image_label.tool='select';self.image_label.setCursor(Qt.CursorShape.IBeamCursor)
+        if not self.document.pages or self.reading_key!=(self.document.pages[self.pages.currentRow()],len(self.document.pages)):return
+        start,end=gesture['start'],gesture['end'];payload={}
+        if kind=='note':
+            text,ok=QInputDialog.getMultiLineText(self,'ملاحظة','نص الملاحظة:')
+            if not ok or not text.strip():return
+            payload={'point':start,'text':text}
+        elif kind=='arrow':payload={'start':start,'end':end}
+        elif kind=='stamp':
+            x,y=min(start[0],end[0]),min(start[1],end[1]);w,h=abs(end[0]-start[0]),abs(end[1]-start[1])
+            width,height=self.display_size(self.document.pages[self.pages.currentRow()])
+            if w<40 or h<25:w,h=min(180,width),min(65,height)
+            x=max(0,min(x,width-w));y=max(0,min(y,height-h))
+            payload={'rect':(x,y,w,h),'text':self._stamp_label}
+        else:return
+        self.apply_review_action(kind,payload)
+
+    def apply_review_action(self,action,payload):
+        index=self.pages.currentRow()
+        if index<0:return
+        payload=dict(payload);payload['author']=self.review_dock.author.text().strip()
+        try:
+            result=self.document_job('حفظ تعليق المراجعة','review',{'page':index,'action':action,'payload':payload})
+            self.document.replace_document(result['data'],'مستند للمراجعة.pdf');self.refresh(index);self.open_review()
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc)
+
+    def select_review(self,row):
+        if not 0<=row<len(self.review_annotations):
+            self.image_label.review_rects=[];self.image_label.update();return
+        annotation=self.review_annotations[row]
+        self.review_dock.contents.setPlainText((annotation['author']+'\n' if annotation['author'] else '')+annotation['text'])
+        self.review_dock.edit.setEnabled(annotation['managed']);self.review_dock.delete.setEnabled(annotation['managed'])
+        self.image_label.review_rects=[annotation['rect']];self.image_label.update()
+
+    def edit_review(self):
+        row=self.review_dock.items.currentRow()
+        if not 0<=row<len(self.review_annotations):return
+        annotation=self.review_annotations[row]
+        if not annotation['managed']:return
+        text,ok=QInputDialog.getMultiLineText(self,'تعديل التعليق','نص التعليق:',text=annotation['text'])
+        if ok:self.apply_review_action('update',{'id':annotation['id'],'text':text,'rect':annotation['rect']})
+
+    def delete_review(self):
+        row=self.review_dock.items.currentRow()
+        if 0<=row<len(self.review_annotations) and self.review_annotations[row]['managed']:
+            self.apply_review_action('delete',{'id':self.review_annotations[row]['id']})
+
+    def search_document(self,query):
+        if not query.strip() or not self.document.pages:return
+        try:
+            self.search_matches=self.document_job('البحث داخل المستند','search',{'query':query})['matches']
+            self.search_dock.set_results(self.search_matches)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc)
+
+    def show_search_match(self,row):
+        if 0<=row<len(self.search_matches):
+            match=self.search_matches[row];self.pending_match=(match['page'],match['rects'])
+            self.go_to_page(match['page']+1);self.schedule_preview()
+
+    def ocr_document(self):
+        if not self.document.pages:return
+        settings=QSettings();configured=settings.value('ocr/engine','')
+        dialog=OcrDialog(find_tesseract(configured),self)
+        if dialog.exec()!=QDialog.DialogCode.Accepted:return
+        engine=dialog.engine.text().strip()
+        if engine:settings.setValue('ocr/engine',engine)
+        indexes=self.selected() if dialog.scope.currentData() else list(range(len(self.document.pages)))
+        try:
+            job=self.document_job('التعرف على النص OCR','ocr',{'indexes':indexes,'language':dialog.language.currentData(),'engine':engine,'skip_text':dialog.skip.isChecked()})
+            result,report=job['data'],job['report']
+            if report['recognized']:
+                current=self.pages.currentRow();self.document.replace_document(result,'مستند OCR.pdf');self.refresh(current)
+            self.statusBar().showMessage(f"اكتمل OCR: {len(report['recognized'])} صفحة، وتُخطّيت {len(report['skipped'])} صفحة تحتوي نصًا.",15000)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc)
 
     def go_to_page(self, number):
         if not self.rebuilding and number - 1 != self.pages.currentRow():
@@ -867,14 +1116,13 @@ class MainWindow(QMainWindow):
             return
         index = max(0, self.pages.currentRow())
         try:
-            with self.busy('جاري تجهيز الصفحة للتحرير…'):
-                data = self.document.build_bytes([index], overlay_renderer=text_overlay,
-                    preview_context=(index+1, len(self.document.pages)))
-                dialog = PageEditorDialog(data, self)
+            data=self.document_job('تجهيز الصفحة للتحرير','assemble',{'indexes':[index],'preview_context':(index+1,len(self.document.pages))})['data']
+            dialog = PageEditorDialog(data, self)
             if dialog.exec() == QDialog.DialogCode.Accepted and dialog.data != dialog.initial_data:
                 self.document.replace_page(index, dialog.data)
                 self.refresh(index)
                 self.statusBar().showMessage('طُبّقت تعديلات الصفحة. اختر «حفظ نسخة» لحفظ المستند المعدّل.', 12000)
+        except JobCancelled:pass
         except Exception as exc:
             self.error(exc)
 
@@ -946,11 +1194,11 @@ class MainWindow(QMainWindow):
             return not progress.wasCanceled()
         try:
             with self.busy("جاري تجهيز الصفحات للطباعة…"):
-                data = self.document.build_bytes(overlay_renderer=text_overlay)
+                data=self.document_job('تجهيز الطباعة','assemble',{})['data']
                 indexes = requested_pages(printer, len(self.document.pages), self.pages.currentRow(), self.selected())
                 count = paint_pdf(printer, data, indexes, tick)
             self.statusBar().showMessage(f"تم إرسال {count} صفحة إلى الطابعة.", 12000)
-        except PrintCancelled:
+        except (PrintCancelled,JobCancelled):
             self.statusBar().showMessage("تم إلغاء الطباعة. قد تكون الصفحات التي أُرسلت بالفعل في قائمة انتظار الطابعة.", 15000)
         except Exception as exc:
             self.error(exc)
@@ -961,8 +1209,7 @@ class MainWindow(QMainWindow):
         if not self.document.pages:
             return
         try:
-            with self.busy("جاري تجهيز معاينة الطباعة…"):
-                data = self.document.build_bytes(overlay_renderer=text_overlay)
+            data=self.document_job('تجهيز معاينة الطباعة','assemble',{})['data']
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             printer.setResolution(150)
             printer.setDocName(self.document_name.text())
@@ -976,6 +1223,7 @@ class MainWindow(QMainWindow):
                     self.error(exc)
             dialog.paintRequested.connect(paint)
             dialog.exec()
+        except JobCancelled:pass
         except Exception as exc:
             self.error(exc)
 
@@ -995,14 +1243,14 @@ class MainWindow(QMainWindow):
                 if result != QMessageBox.StandardButton.Yes:
                     return False
         try:
-            with self.busy("جاري إنشاء النسخة…"):
-                self.document.save(path, indexes=indexes, password=options.output_password(), overlay_renderer=text_overlay)
+            self.write_pdf_background(path,indexes,options.output_password())
             if indexes is None:
                 self.document.mark_saved()
                 self.last_output = Path(path)
                 self.update_status()
             self.statusBar().showMessage(f"تم الحفظ: {path}", 12000)
             return True
+        except JobCancelled:return False
         except Exception as exc:
             self.error(f"لم يتم حفظ النسخة.\n{exc}", exc)
             return False
@@ -1042,14 +1290,15 @@ class MainWindow(QMainWindow):
                     while path.exists():
                         path = Path(folder) / f"{base}-{suffix}.pdf"
                         suffix += 1
-                    self.document.save(path, indexes=list(range(start, end)), password=options.output_password(), overlay_renderer=text_overlay)
+                    self.write_pdf_background(path,list(range(start,end)),options.output_password())
                     written.append(path)
             QMessageBox.information(self, "اكتمل التقسيم", f"تم إنشاء {len(written)} ملف PDF في:\n{folder}")
+        except JobCancelled:self.statusBar().showMessage(f'أُلغي التقسيم بعد إنشاء {len(written)} ملف مكتمل.',12000)
         except Exception as exc:
             self.error(f"توقف التقسيم بعد إنشاء {len(written)} ملف.\n{exc}", exc)
 
     def about(self):
-        QMessageBox.about(self, "عن ورّاق PDF", f"<h2>ورّاق PDF · {__version__}</h2><p>تطبيق مستقل مفتوح المصدر لإدارة ملفات PDF محليًا.</p><p>كود التطبيق بترخيص MIT. المكتبات المرفقة لها تراخيصها الخاصة؛ راجع THIRD_PARTY_NOTICES وملفات التراخيص.</p><p>يدعم العرض وتنظيم الصفحات والدمج والتقسيم وإضافة النصوص. لا يدعم تعديل النص الأصلي أو OCR أو التوقيع الرقمي المعتمد في هذه النسخة.</p><p>ليس تابعًا لـ Adobe، ولا يستخدم كود Acrobat أو أدوات تفعيله.</p>")
+        QMessageBox.about(self, "عن ورّاق PDF", f"<h2>ورّاق PDF · {__version__}</h2><p>تطبيق مستقل مفتوح المصدر لإدارة ملفات PDF محليًا.</p><p>كود التطبيق بترخيص MIT. المكتبات وبيانات OCR المرفقة لها تراخيصها الخاصة؛ راجع THIRD_PARTY_NOTICES وملفات التراخيص.</p><p>يدعم التحرير على مستوى الكلمات والفقرات، وOCR عربي/إنجليزي عبر Tesseract محلي، والبحث والنسخ، ومشروعات الاستعادة، وأدوات المراجعة. لا يوفر توقيعًا رقميًا معتمدًا أو إعادة تنسيق المستند مثل برنامج Word.</p><p>ليس تابعًا لـ Adobe، ولا يستخدم كود Acrobat أو أدوات تفعيله.</p>")
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -1063,6 +1312,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self.confirm_discard():
+            self.autosave_timer.stop();self.clear_recovery()
             self.thumb_timer.stop()
             self.preview_timer.stop()
             self.close_pdfs()
@@ -1089,6 +1339,10 @@ def main():
             if '--print' in sys.argv and window.document.pages:
                 window.print_document()
         QTimer.singleShot(0, open_arguments)
+    else:
+        project=next((p for p in sys.argv[1:] if Path(p).suffix.lower()=='.waraq'),None)
+        if project:QTimer.singleShot(0,lambda:window.open_project(project))
+        else:QTimer.singleShot(500,window.offer_recovery)
     sys.exit(app.exec())
 
 

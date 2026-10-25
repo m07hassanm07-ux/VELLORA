@@ -7,6 +7,7 @@ not a secure-redaction implementation.
 from dataclasses import dataclass
 from io import BytesIO
 import math
+import ctypes
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as raw
@@ -25,6 +26,12 @@ class EditableObject:
     text: str
     rect: tuple[float, float, float, float]  # left, top, width, height
     size: float = 16
+    family: str = 'Segoe UI'
+    bold: bool = False
+    color: str = '#123b48'
+    alignment: str = 'left'
+    indices: tuple = ()
+    chars: tuple = ()
 
 
 def prepare_page(data: bytes) -> bytes:
@@ -69,18 +76,28 @@ def inspect_page(data: bytes) -> tuple[float, float, list[EditableObject]]:
                 for index, obj in enumerate(page.get_objects(max_depth=1, textpage=textpage)):
                     if obj.type not in (raw.FPDF_PAGEOBJ_TEXT, raw.FPDF_PAGEOBJ_IMAGE):
                         continue
+                    if obj.type == raw.FPDF_PAGEOBJ_TEXT and raw.FPDFTextObj_GetTextRenderMode(obj) == 3:
+                        continue  # searchable OCR text is not the scanned image
                     l, b, r, t = obj.get_bounds()
                     if r <= 0 or t <= 0 or l >= width or b >= height:
                         continue
                     text, size = '', 16.0
+                    family, bold, color = 'Segoe UI', False, '#123b48'
                     if obj.type == raw.FPDF_PAGEOBJ_TEXT:
                         try:
                             text = obj.extract().strip('\x00\r\n')
                             size = obj.get_font_size()
+                            font = obj.get_font()
+                            base = font.get_base_name().split('+')[-1]
+                            family = base if base in font.STANDARD_FONTS else (font.get_family_name() or base)
+                            bold = font.get_weight() >= 600
+                            rgba = [ctypes.c_uint() for _ in range(4)]
+                            if raw.FPDFPageObj_GetFillColor(obj, *[ctypes.byref(v) for v in rgba]):
+                                color = '#%02x%02x%02x' % tuple(v.value for v in rgba[:3])
                         except pdfium.PdfiumError:
                             text = ''
                     result.append(EditableObject(index, 'text' if obj.type == raw.FPDF_PAGEOBJ_TEXT else 'image',
-                        text, (l, height-t, max(r-l, .1), max(t-b, .1)), size))
+                        text, (l, height-t, max(r-l, .1), max(t-b, .1)), size, family, bold, color))
                 return width, height, result
             finally:
                 textpage.close()
@@ -88,7 +105,7 @@ def inspect_page(data: bytes) -> tuple[float, float, list[EditableObject]]:
             page.close()
 
 
-def _remove_objects(data: bytes, indexes: list[int]) -> bytes:
+def _remove_objects(data: bytes, indexes: list[int], selected_chars=None) -> bytes:
     if not indexes:
         return data
     with pdfium.PdfDocument(data) as document:
@@ -98,11 +115,66 @@ def _remove_objects(data: bytes, indexes: list[int]) -> bytes:
             selected = sorted(set(indexes), reverse=True)
             if any(i < 0 or i >= len(objects) or objects[i].type not in (raw.FPDF_PAGEOBJ_TEXT, raw.FPDF_PAGEOBJ_IMAGE) for i in selected):
                 raise ValueError('العنصر المحدد غير قابل للتحرير. أعد تحديده من الصفحة.')
+            retained = []
+            if selected_chars is not None:
+                from .textlayout import address
+                root_map = {address(o.raw): i for i, o in enumerate(objects)}
+                wanted = set(selected_chars)
+                textpage = page.get_textpage()
+                try:
+                    owner_chars = {owner: [] for owner in selected}
+                    for char_index in range(textpage.count_chars()):
+                        obj = textpage.get_textobj(char_index)
+                        owner = root_map.get(address(obj.raw)) if obj is not None else None
+                        if owner in owner_chars:
+                            owner_chars[owner].append(char_index)
+                    # PDF subset fonts often cannot encode individual Unicode
+                    # glyphs again. Refuse a partial rewrite instead of silently
+                    # producing scrambled text; whole-object edits remain safe.
+                    for owner, chars in owner_chars.items():
+                        if chars and wanted.intersection(chars) != set(chars):
+                            font = objects[owner].get_font()
+                            base = font.get_base_name().split('+')[-1]
+                            if base not in font.STANDARD_FONTS:
+                                raise ValueError('هذا الخط المضمّن لا يسمح بتعديل جزء من عنصر النص بأمان. اختر «عنصر أصلي» وحدده كاملًا؛ لم تتغير الصفحة.')
+                    for char_index in range(textpage.count_chars()):
+                        obj = textpage.get_textobj(char_index)
+                        owner = root_map.get(address(obj.raw)) if obj is not None else None
+                        if owner not in selected or char_index in wanted:
+                            continue
+                        code = raw.FPDFText_GetUnicode(textpage, char_index)
+                        if not code or chr(code).isspace(): continue
+                        original = objects[owner]
+                        if raw.FPDFTextObj_GetTextRenderMode(original) != 0:
+                            raise ValueError('هذا العنصر يستخدم تأثيرات خط خاصة. اختر تحديد العنصر كاملًا بدل جزء منه.')
+                        x, y = ctypes.c_double(), ctypes.c_double()
+                        if not raw.FPDFText_GetCharOrigin(textpage, char_index, ctypes.byref(x), ctypes.byref(y)):
+                            raise ValueError('تعذر الاحتفاظ بمواضع بقية حروف العنصر.')
+                        handle = raw.FPDFPageObj_CreateTextObj(document, original.get_font(), original.get_font_size())
+                        if not handle: raise ValueError('تعذر تقسيم العنصر النصي.')
+                        copy = pdfium.PdfObject(handle, pdf=document)
+                        encoded = (ctypes.c_ushort * ((len(chr(code).encode('utf-16-le'))//2)+1))()
+                        ctypes.memmove(encoded, chr(code).encode('utf-16-le'), len(chr(code).encode('utf-16-le')))
+                        if not raw.FPDFText_SetText(copy, encoded):
+                            copy.close(); raise ValueError('الخط المضمّن لا يسمح بتقسيم هذا العنصر. اختر العنصر كاملًا.')
+                        matrix = original.get_matrix()
+                        copy.set_matrix(pdfium.PdfMatrix(matrix.a, matrix.b, matrix.c, matrix.d, x.value, y.value))
+                        rgba = [ctypes.c_uint() for _ in range(4)]
+                        if raw.FPDFPageObj_GetFillColor(original, *[ctypes.byref(v) for v in rgba]):
+                            raw.FPDFPageObj_SetFillColor(copy, *[v.value for v in rgba])
+                        retained.append(copy)
+                except Exception:
+                    for obj in retained: obj.close()
+                    raise
+                finally:
+                    textpage.close()
             # No live PdfTextPage handles while text objects are removed.
             for index in selected:
                 obj = objects[index]
                 page.remove_obj(obj)
                 obj.close()
+            for obj in retained:
+                page.insert_obj(obj)
             page.gen_content()
             stream = BytesIO(); document.save(stream)
             return stream.getvalue()
@@ -110,7 +182,7 @@ def _remove_objects(data: bytes, indexes: list[int]) -> bytes:
             page.close()
 
 
-def _layer(width, height, rect, *, text=None, image=None, size=16, family='Segoe UI', color='#123b48', bold=False):
+def _layer(width, height, rect, *, text=None, image=None, size=16, family='Segoe UI', color='#123b48', bold=False, alignment='auto'):
     ensure_font_support()
     x, y, w, h = rect
     if not all(math.isfinite(v) for v in (x, y, w, h, width, height)) or w <= 0 or h <= 0 or x < 0 or y < 0 or x+w > width+.01 or y+h > height+.01:
@@ -133,6 +205,8 @@ def _layer(width, height, rect, *, text=None, image=None, size=16, family='Segoe
         option = layout.defaultTextOption()
         option.setTextDirection(Qt.LayoutDirection.LayoutDirectionAuto)
         option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        option.setAlignment({'left': Qt.AlignmentFlag.AlignLeft, 'right': Qt.AlignmentFlag.AlignRight,
+            'center': Qt.AlignmentFlag.AlignHCenter, 'auto': Qt.AlignmentFlag.AlignLeading}.get(alignment, Qt.AlignmentFlag.AlignLeading))
         layout.setDefaultTextOption(option)
         # Plain text only: PDF text is never interpreted as rich HTML.
         layout.setPlainText(text)
@@ -169,7 +243,7 @@ def _layer(width, height, rect, *, text=None, image=None, size=16, family='Segoe
 
 
 def edit_page(data: bytes, indexes=(), *, text=None, image: QImage | None=None, rect=None,
-              size=16, family='Segoe UI', color='#123b48', bold=False) -> bytes:
+              size=16, family='Segoe UI', color='#123b48', bold=False, alignment='auto', selected_chars=None) -> bytes:
     """Delete selected objects and optionally place a new vector-text/image layer.
 
     The caller owns source bytes; a failure returns no replacement and changes
@@ -183,10 +257,10 @@ def edit_page(data: bytes, indexes=(), *, text=None, image: QImage | None=None, 
     if text is not None or image is not None:
         if rect is None:
             raise ValueError('حدد مكان الإضافة على الصفحة.')
-        layer = _layer(width, height, rect, text=text, image=image, size=size, family=family, color=color, bold=bold)
+        layer = _layer(width, height, rect, text=text, image=image, size=size, family=family, color=color, bold=bold, alignment=alignment)
     elif not indexes:
         raise ValueError('حدد عنصرًا للحذف.')
-    changed = _remove_objects(data, list(indexes))
+    changed = _remove_objects(data, list(indexes), selected_chars)
     reader = PdfReader(BytesIO(changed))
     if layer:
         reader.pages[0].merge_page(PdfReader(BytesIO(layer)).pages[0])

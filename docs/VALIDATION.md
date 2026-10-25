@@ -1,4 +1,4 @@
-# Validation of 0.3.0
+# Validation of 0.4.0
 
 Editing, runtime and setup validation: 22 October 2026. Host: Windows 11 x64, Python 3.12.14. Earlier conversion/browser observations from 0.2.0 on 21 October are explicitly retained below.
 
@@ -31,7 +31,7 @@ Screenshots are in `docs/screenshots/`. The sample contains no user documents or
 
 ## Packaged runtime and installer
 
-The final frozen 0.3.0 executable's `--self-test` uses synthetic input: saving two pages, AES-256 encryption/decryption, rendering, printing two pages to PDF, removing/replacing text and constructing the editor dialog. See `packaged-results.json` and the installed-runtime check in `installer-results.json`. No physical print job was sent.
+The final frozen 0.4.0 executable's `--self-test` uses synthetic input: saving two pages, AES-256 encryption/decryption, rendering, printing two pages to PDF, replacing text, searching, project encryption/restore, a review annotation, the editor dialog, and a child worker process. See `packaged-results.json` and the installed-runtime check in `installer-results.json`. No physical print job was sent.
 
 Setup tests use a fresh directory under `tmp/` and `/TESTMODE`, which suppresses registry and shortcut changes. The test verifies installation, runs the installed executable's diagnostics, uninstalls, and checks that user-created documents survive and known runtime files are removed. See `installer-results.json`. Registration/shortcut source was reviewed; regular installation was not applied to the user's Windows profile during testing.
 
@@ -49,7 +49,7 @@ Edge/Firefox display, PowerPoint conversion and LibreOffice conversion were not 
 
 ## Limits
 
-No exhaustive PDF conformance suite, performance/security audit, cross-platform test or OCR test was performed. Editing is limited to top-level text/image objects and adds no paragraph/table reflow or secure-redaction guarantee. Complex XFA forms, signed-document validity, attachments, bookmarks and PDF/A archival conformance are outside the supported preservation scope.
+No exhaustive PDF conformance suite, performance/security audit or cross-platform test was performed. A real synthetic bilingual OCR check verified Arabic/English extraction and pixel-identical visible rendering, but this is not a broad corpus benchmark. Editing is limited to top-level text/image objects and adds no table reflow or secure-redaction guarantee. Complex XFA forms, signed-document validity, attachments, bookmarks and PDF/A archival conformance are outside the supported preservation scope.
 
 The native Windows packaged executable was launched successfully and its Arabic interface and PDF preview were observed. An initial bundle incorrectly collected Poppler's ICU from the developer PATH; the spec now excludes this incompatible ICU and uses the Windows OS ICU required by Qt. This is recorded in `release/native-check.txt`.
 

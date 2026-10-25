@@ -1,10 +1,14 @@
 {
-  "version": "0.3.0",
+  "version": "0.4.0",
   "passed": true,
   "merge_pages": 2,
   "print_pages": 2,
   "encrypted_roundtrip": true,
   "rendered": true,
   "text_replacement": true,
-  "editor_dialog": true
+  "editor_dialog": true,
+  "search": true,
+  "project_roundtrip": true,
+  "review_annotation": true,
+  "worker_process": true
 }

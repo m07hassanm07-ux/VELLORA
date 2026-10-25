@@ -17,11 +17,14 @@ Runtime dependencies:
 | pycparser | 3.11 | BSD-3-Clause | https://github.com/eliben/pycparser |
 | CPython | 3.12 runtime | PSF License and included third-party notices | https://www.python.org/ |
 | pywin32 | 311 | BSD-style and component-specific licenses; see the copied license texts | https://github.com/mhammond/pywin32 |
+| Tesseract `ara`/`eng` trained data and GlyphLessFont | official tagged model/font files | Apache-2.0 | https://github.com/tesseract-ocr/tessdata_fast |
 
 The `licenses/` directory contains license and notice files collected from the installed distributions. PDFium-specific third-party notices are copied there from its wheel. `dependency-versions.json` records installed versions. Source references are included for identifying matching upstream releases; they are not a promise that all dependencies use MIT.
 
 Qt libraries are dynamically linked in the Windows distribution. Users may replace compatible Qt/PySide libraries and debug modifications as permitted by their licenses; this project imposes no additional restriction on doing so. Preserve the notices and comply with the applicable LGPL source-distribution obligations when redistributing Qt binaries. Matching unmodified Qt Base, Qt SVG, and PySide/Shiboken source archives are retained alongside the release in `release/dependency-sources/`; keep them accessible with redistributed binaries and the application source. The official URLs and hashes are recorded there. Qt source license texts and third-party attribution files are also copied into `licenses/Qt-source-notices/`.
 
 PyInstaller is a build tool under GPL with its application-distribution exception. Its bootloader exception permits bundling non-GPL application code. See the copied PyInstaller license files for the exact terms.
+
+The Tesseract recognition engine is optional external software and is not bundled. Waraq bundles only the official Arabic/English model data and GlyphLessFont used by that engine; exact source URLs and hashes are in `licenses/Tesseract-models/SOURCES.json`.
 
 NSIS 3.12 builds the Windows setup program. Its copied COPYING file describes the zlib/libpng installer-stub license and licenses for compression and other components. Office, LibreOffice, Chrome and Edge are optional external programs and are not included in this distribution.
