@@ -77,7 +77,7 @@ class EditCanvas(QGraphicsView):
 class PageEditorDialog(QDialog):
     def __init__(self, data, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('تعديل محتوى الصفحة — ورّاق PDF')
+        self.setWindowTitle('تعديل محتوى الصفحة — ورقة')
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.resize(1180, 820)
         self.data = prepare_page(data)

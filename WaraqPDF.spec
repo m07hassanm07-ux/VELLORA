@@ -8,6 +8,7 @@ if (ROOT / 'licenses').exists():
     datas.append((str(ROOT / 'licenses'), 'licenses'))
 datas += collect_data_files('pypdfium2_raw')
 datas.append((str(ROOT / 'assets' / 'ocr'), 'ocr-data'))
+datas.append((str(ROOT / 'assets' / 'waraqa-icon.png'), '.'))
 
 a = Analysis(
     [str(ROOT / 'run.py')],
@@ -24,7 +25,7 @@ a = Analysis(
 if os.name == 'nt':
     a.binaries = [entry for entry in a.binaries if Path(entry[0]).name.lower() not in {'icuuc.dll', 'icuin.dll', 'icudt78.dll'}]
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='WaraqPDF', debug=False,
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='Waraqa', debug=False,
           bootloader_ignore_signals=False, strip=False, upx=False, console=False,
           disable_windowed_traceback=False, icon=str(ROOT / 'assets' / 'waraq.ico') if (ROOT / 'assets' / 'waraq.ico').exists() else None)
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='WaraqPDF')
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='Waraqa')

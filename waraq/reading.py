@@ -88,7 +88,7 @@ class OcrDialog(QDialog):
     def __init__(self,engine,parent=None):
         super().__init__(parent); self.setWindowTitle('التعرف على النص OCR'); self.resize(540,300)
         layout=QVBoxLayout(self)
-        note=QLabel('التعرف يعمل محليًا عبر محرك Tesseract المثبت منفصلًا. بيانات العربية والإنجليزية مرفقة مع ورّاق. تُحفظ صورة الصفحة وتُضاف طبقة مخفية للبحث والنسخ.');note.setWordWrap(True);layout.addWidget(note)
+        note=QLabel('التعرف يعمل محليًا عبر محرك Tesseract المثبت منفصلًا. بيانات العربية والإنجليزية مرفقة مع ورقة. تُحفظ صورة الصفحة وتُضاف طبقة مخفية للبحث والنسخ.');note.setWordWrap(True);layout.addWidget(note)
         download=QPushButton('تنزيل محرك Tesseract من مصدره')
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices

@@ -82,7 +82,7 @@ def apply_review(data,page_index,action,payload):
             existing=list(page.get('/Annots',[]))
             if action in ('delete','update'):
                 name=str(payload.get('id',''))
-                if not name.startswith('waraq-'):raise ValueError('يمكن تعديل أو حذف تعليقات ورّاق فقط؛ التعليقات الأخرى تُعرض للقراءة.')
+                if not name.startswith('waraq-'):raise ValueError('يمكن تعديل أو حذف تعليقات ورقة فقط؛ التعليقات الأخرى تُعرض للقراءة.')
                 targets=[ref for ref in existing if str(ref.get_object().get('/NM',''))==name]
                 if len(targets)!=1:raise ValueError('لم يعد التعليق المحدد موجودًا.')
                 if action=='delete':

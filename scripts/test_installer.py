@@ -8,12 +8,12 @@ import json,os,subprocess,sys,time,uuid,winreg
 root=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(root))
 from waraq import __version__
-setup=root/'release'/f'WaraqPDF-{__version__}-Setup-x64.exe'
+setup=root/'release'/f'Waraqa-{__version__}-Setup-x64.exe'
 target=(root/'tmp'/('installer-test-'+uuid.uuid4().hex[:8])).resolve()
 assert target.is_relative_to(root.resolve()/'tmp')
 target.mkdir(parents=True)
 sentinel=target/'user-created-document.pdf';sentinel.write_bytes(b'user-created-test-document-must-survive')
-keys=[r'Software\WaraqPDF',r'Software\Classes\WaraqPDF.Document',r'Software\Classes\Applications\WaraqPDF.exe',r'Software\Microsoft\Windows\CurrentVersion\Uninstall\WaraqPDF']
+keys=[r'Software\WaraqPDF',r'Software\Classes\WaraqPDF.Document',r'Software\Classes\Applications\WaraqPDF.exe',r'Software\Classes\Applications\Waraqa.exe',r'Software\Microsoft\Windows\CurrentVersion\Uninstall\WaraqPDF']
 def registry_state():
     result={}
     for name in keys:
@@ -27,7 +27,7 @@ def registry_state():
 before=registry_state()
 completed=subprocess.run([str(setup),'/S','/TESTMODE',f'/D={target}'],timeout=180)
 assert completed.returncode==0,completed.returncode
-exe=target/'WaraqPDF.exe';uninstaller=target/'Uninstall.exe'
+exe=target/'Waraqa.exe';uninstaller=target/'Uninstall.exe'
 assert exe.is_file() and exe.read_bytes()[:2]==b'MZ'
 assert (target/'_internal'/'PySide6'/'QtPrintSupport.pyd').is_file()
 assert (target/'.waraq-install').read_text().strip()=='1'

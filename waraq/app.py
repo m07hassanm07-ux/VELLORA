@@ -240,7 +240,7 @@ class MainWindow(QMainWindow):
         self.review_annotations=[];self._stamp_label='للمراجعة'
         self.resize(1320, 850)
         self.setMinimumSize(980, 650)
-        self.setWindowTitle("ورّاق PDF | Waraq PDF")
+        self.setWindowTitle("ورقة | Waraqa")
         self.setAcceptDrops(True)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.setWindowIcon(self.brand_icon())
@@ -267,18 +267,11 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def brand_icon(self):
-        pixmap = QPixmap(64, 64)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor("#157b67"))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(0, 0, 64, 64, 14, 14)
-        painter.setPen(Qt.GlobalColor.white)
-        painter.setFont(QFont("Segoe UI", 32, QFont.Weight.Bold))
-        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "و")
-        painter.end()
-        return QIcon(pixmap)
+        root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
+        icon = QIcon(str(root / 'waraqa-icon.png'))
+        if not icon.isNull():
+            return icon
+        return QIcon(str(Path(__file__).resolve().parents[1] / 'assets' / 'waraqa-icon.png'))
 
     def make_ui(self):
         container = QWidget()
@@ -289,7 +282,7 @@ class MainWindow(QMainWindow):
         header = QFrame(objectName="header")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(24, 16, 24, 16)
-        brand = QLabel("ورّاق PDF", objectName="brand")
+        brand = QLabel("ورقة", objectName="brand")
         brand_column = QVBoxLayout()
         brand_column.setSpacing(1)
         brand_column.addWidget(brand)
@@ -346,7 +339,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status)
         self.status_label = QLabel("جاهز  •  لا يتم رفع ملفاتك إلى أي خادم")
         status.addWidget(self.status_label, 1)
-        version = QLabel(f"Waraq PDF  {__version__}")
+        version = QLabel(f"Waraqa  {__version__}")
         version.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         status.addPermanentWidget(version)
 
@@ -483,7 +476,7 @@ class MainWindow(QMainWindow):
         help_menu = menu.addMenu("مساعدة")
         for parent, key, title, shortcut, handler in [
             (files, "open", "فتح مستند…", "Ctrl+O", self.open_dialog),
-            (files, 'openproject', 'فتح مشروع ورّاق…', 'Ctrl+Alt+O', self.open_project),
+            (files, 'openproject', 'فتح مشروع ورقة…', 'Ctrl+Alt+O', self.open_project),
             (files, 'saveproject', 'حفظ مشروع للاستكمال…', 'Ctrl+Shift+S', self.save_project),
             (files, "add", "إضافة ملفات…", "Ctrl+Shift+O", self.add_dialog),
             (files, "merge", "دمج عدة ملفات…", "Ctrl+M", self.merge_dialog),
@@ -514,7 +507,7 @@ class MainWindow(QMainWindow):
             (review,'note','إضافة ملاحظة','Ctrl+Shift+N',lambda:self.begin_review('note')),
             (review,'arrow','رسم سهم','',lambda:self.begin_review('arrow')),
             (review,'stamp','إضافة ختم','',lambda:self.begin_review('stamp')),
-            (help_menu, "about", "عن ورّاق PDF…", "", self.about),
+            (help_menu, "about", "عن ورقة…", "", self.about),
         ]:
             action = QAction(title, self)
             if shortcut:
@@ -596,7 +589,7 @@ class MainWindow(QMainWindow):
 
     def save_project(self):
         if not self.document.pages:return False
-        path,_=QFileDialog.getSaveFileName(self,'حفظ مشروع ورّاق',str(self.project_path or 'مشروع.waraq'),'Waraq project (*.waraq)')
+        path,_=QFileDialog.getSaveFileName(self,'حفظ مشروع ورقة',str(self.project_path or 'مشروع.waraq'),'Waraqa project (*.waraq)')
         if not path:return False
         if not path.lower().endswith('.waraq'):
             path+='.waraq'
@@ -618,7 +611,7 @@ class MainWindow(QMainWindow):
     def open_project(self,path=None):
         if isinstance(path,bool):path=None
         if not path:
-            path,_=QFileDialog.getOpenFileName(self,'فتح مشروع ورّاق','','Waraq project (*.waraq)')
+            path,_=QFileDialog.getOpenFileName(self,'فتح مشروع ورقة','','Waraqa project (*.waraq)')
         if not path or not self.confirm_discard():return
         try:
             data=Path(path).read_bytes();password=''
@@ -786,7 +779,7 @@ class MainWindow(QMainWindow):
         names = list(dict.fromkeys(self.document.sources[p.source].name for p in self.document.pages))
         title = names[0] if len(names) == 1 else f"مستند مدمج من {len(names)} ملفات" if names else "مساحة العمل"
         self.document_name.setText(title)
-        self.setWindowTitle(f"{'● ' if self.document.dirty else ''}{title} — ورّاق PDF")
+        self.setWindowTitle(f"{'● ' if self.document.dirty else ''}{title} — ورقة")
         self.save_button.setEnabled(bool(count))
         self.print_button.setEnabled(bool(count))
         self.edit_button.setEnabled(bool(count))
@@ -1214,7 +1207,7 @@ class MainWindow(QMainWindow):
             printer.setResolution(150)
             printer.setDocName(self.document_name.text())
             dialog = QPrintPreviewDialog(printer, self)
-            dialog.setWindowTitle("معاينة الطباعة — ورّاق PDF")
+            dialog.setWindowTitle("معاينة الطباعة — ورقة")
             dialog.resize(1000, 760)
             def paint(target):
                 try:
@@ -1298,7 +1291,7 @@ class MainWindow(QMainWindow):
             self.error(f"توقف التقسيم بعد إنشاء {len(written)} ملف.\n{exc}", exc)
 
     def about(self):
-        QMessageBox.about(self, "عن ورّاق PDF", f"<h2>ورّاق PDF · {__version__}</h2><p>تطبيق مستقل مفتوح المصدر لإدارة ملفات PDF محليًا.</p><p>كود التطبيق بترخيص MIT. المكتبات وبيانات OCR المرفقة لها تراخيصها الخاصة؛ راجع THIRD_PARTY_NOTICES وملفات التراخيص.</p><p>يدعم التحرير على مستوى الكلمات والفقرات، وOCR عربي/إنجليزي عبر Tesseract محلي، والبحث والنسخ، ومشروعات الاستعادة، وأدوات المراجعة. لا يوفر توقيعًا رقميًا معتمدًا أو إعادة تنسيق المستند مثل برنامج Word.</p><p>ليس تابعًا لـ Adobe، ولا يستخدم كود Acrobat أو أدوات تفعيله.</p>")
+        QMessageBox.about(self, "عن ورقة", f"<h2>ورقة · {__version__}</h2><p>تطبيق مستقل مفتوح المصدر لإدارة ملفات PDF محليًا.</p><p>كود التطبيق بترخيص MIT. المكتبات وبيانات OCR المرفقة لها تراخيصها الخاصة؛ راجع THIRD_PARTY_NOTICES وملفات التراخيص.</p><p>يدعم التحرير على مستوى الكلمات والفقرات، وOCR عربي/إنجليزي عبر Tesseract محلي، والبحث والنسخ، ومشروعات الاستعادة، وأدوات المراجعة. لا يوفر توقيعًا رقميًا معتمدًا أو إعادة تنسيق المستند مثل برنامج Word.</p><p>ليس تابعًا لـ Adobe، ولا يستخدم كود Acrobat أو أدوات تفعيله.</p>")
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -1324,9 +1317,9 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     ensure_font_support()
-    app.setApplicationName("Waraq PDF")
+    app.setApplicationName("ورقة")
     app.setApplicationVersion(__version__)
-    app.setOrganizationName("Waraq PDF")
+    app.setOrganizationName("Waraqa")
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
     app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
