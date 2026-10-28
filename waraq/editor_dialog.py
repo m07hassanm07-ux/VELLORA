@@ -2,7 +2,7 @@
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QImageReader, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout,
@@ -10,12 +10,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QVBoxLayout, QWidget)
 
 from .editing import edit_page, inspect_page, prepare_page
-from .rendering import render_image
+from .rendering import render_image, ensure_font_support
 from .textlayout import group_text
+from .fonts import install_font
 
 
 class EditCanvas(QGraphicsView):
     region_selected = Signal(QRectF)
+    rect_changed = Signal(QRectF)
 
     def __init__(self):
         super().__init__()
@@ -27,6 +29,10 @@ class EditCanvas(QGraphicsView):
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.start = None
         self.selection = None
+        self.handles = []
+        self.drag_mode = None
+        self.drag_origin = None
+        self.drag_rect = None
 
     def set_page(self, data):
         with pdfium.PdfDocument(data) as pdf:
@@ -37,36 +43,83 @@ class EditCanvas(QGraphicsView):
                 page.close()
             scale = min(1.5, 1500/max(width, height))
             image = render_image(pdf, 0, scale)
-        self.scene().clear(); self.selection = None
+        self.scene().clear(); self.selection = None; self.handles = []
         item = self.scene().addPixmap(QPixmap.fromImage(image)); item.setScale(1/scale)
         self.scene().setSceneRect(0, 0, width, height)
-        self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.fit_page_width()
+
+    def fit_page_width(self):
+        if self.sceneRect().width()<=0:return
+        self.resetTransform()
+        scale=max(.1,(self.viewport().width()-34)/self.sceneRect().width())
+        self.scale(scale,scale)
 
     def highlight(self, rect):
         if self.selection is not None:
             self.scene().removeItem(self.selection)
             self.selection = None
+        for handle in self.handles:
+            if handle.scene() is not None:self.scene().removeItem(handle)
+        self.handles=[]
         if rect and not rect.isEmpty():
-            pen = QPen(QColor('#0e846c'), 0); pen.setStyle(Qt.PenStyle.DashLine)
-            self.selection = self.scene().addRect(rect, pen, QColor(19, 151, 120, 35))
+            pen = QPen(QColor('#0e846c'), 0)
+            self.selection = self.scene().addRect(rect, pen, QColor(19, 151, 120, 24))
+            points=[rect.topLeft(),rect.topRight(),rect.bottomLeft(),rect.bottomRight(),
+                QPointF(rect.center().x(),rect.top()),QPointF(rect.center().x(),rect.bottom()),
+                QPointF(rect.left(),rect.center().y()),QPointF(rect.right(),rect.center().y())]
+            radius=max(2.5,5/self.transform().m11())
+            for point in points:
+                self.handles.append(self.scene().addEllipse(point.x()-radius,point.y()-radius,radius*2,radius*2,
+                    QPen(QColor('#087a63'),0),QColor('white')))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.fit_page_width()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.start = self.mapToScene(event.position().toPoint())
+            point=self.mapToScene(event.position().toPoint())
+            if self.selection is not None:
+                rect=self.selection.rect();corners=[rect.topLeft(),rect.topRight(),rect.bottomLeft(),rect.bottomRight()]
+                tolerance=max(6,10/self.transform().m11())
+                for index,corner in enumerate(corners):
+                    if (corner-point).manhattanLength()<=tolerance:
+                        self.drag_mode=('resize',index);self.drag_origin=point;self.drag_rect=QRectF(rect);event.accept();return
+                if rect.contains(point):
+                    self.drag_mode=('move',0);self.drag_origin=point;self.drag_rect=QRectF(rect);event.accept();return
+            self.start = point
             event.accept(); return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self.drag_mode is not None:
+            point=self.mapToScene(event.position().toPoint());rect=QRectF(self.drag_rect)
+            if self.drag_mode[0]=='move':
+                rect.translate(point-self.drag_origin)
+                if rect.left()<0:rect.moveLeft(0)
+                if rect.top()<0:rect.moveTop(0)
+                if rect.right()>self.sceneRect().right():rect.moveRight(self.sceneRect().right())
+                if rect.bottom()>self.sceneRect().bottom():rect.moveBottom(self.sceneRect().bottom())
+            else:
+                index=self.drag_mode[1]
+                if index==0:rect.setTopLeft(point)
+                elif index==1:rect.setTopRight(point)
+                elif index==2:rect.setBottomLeft(point)
+                else:rect.setBottomRight(point)
+                rect=rect.normalized().intersected(self.sceneRect())
+            if rect.width()>=3 and rect.height()>=3:self.highlight(rect)
+            event.accept();return
         if self.start is not None:
             rect = QRectF(self.start, self.mapToScene(event.position().toPoint())).normalized().intersected(self.sceneRect())
             self.highlight(rect); event.accept(); return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self.drag_mode is not None and event.button()==Qt.MouseButton.LeftButton:
+            rect=QRectF(self.selection.rect()) if self.selection is not None else QRectF()
+            self.drag_mode=None;self.drag_origin=None;self.drag_rect=None
+            if rect.width()>=3 and rect.height()>=3:self.rect_changed.emit(rect)
+            event.accept();return
         if self.start is not None and event.button() == Qt.MouseButton.LeftButton:
             rect = QRectF(self.start, self.mapToScene(event.position().toPoint())).normalized().intersected(self.sceneRect())
             self.start = None
@@ -75,8 +128,12 @@ class EditCanvas(QGraphicsView):
 
 
 class PageEditorDialog(QDialog):
-    def __init__(self, data, parent=None):
+    def __init__(self, data, parent=None, embedded=False):
         super().__init__(parent)
+        ensure_font_support()
+        self.embedded = embedded
+        if embedded:
+            self.setWindowFlags(Qt.WindowType.Widget)
         self.setWindowTitle('تعديل محتوى الصفحة — ورقة')
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.resize(1180, 820)
@@ -89,7 +146,7 @@ class PageEditorDialog(QDialog):
         self.draft = None
         self.pending = False
         layout = QVBoxLayout(self)
-        note = QLabel('اسحب حول النص أو اختر عناصر من القائمة، ثم عدّل النص واضغط «تطبيق على الصفحة». يمكنك أيضًا إضافة نص أو صورة في مكان جديد.')
+        note = QLabel('حرّر النص والصور مباشرة داخل الصفحة؛ انقر العنصر أو اسحب حوله ثم استخدم لوحة الخصائص.')
         note.setWordWrap(True); layout.addWidget(note)
         toolbar = QHBoxLayout()
         for label, callback in [('تحديد عنصر', self.select_mode), ('نص جديد', self.new_text), ('إضافة صورة…', self.choose_image)]:
@@ -99,6 +156,7 @@ class PageEditorDialog(QDialog):
         layout.addLayout(toolbar)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.canvas = EditCanvas(); self.canvas.region_selected.connect(self.pick_region)
+        self.canvas.rect_changed.connect(self.set_rect)
         panel = QWidget(); panel.setMaximumWidth(395); panel.setMinimumWidth(300)
         controls = QVBoxLayout(panel)
         self.status = QLabel(); self.status.setWordWrap(True); controls.addWidget(self.status)
@@ -116,6 +174,8 @@ class PageEditorDialog(QDialog):
         form = QFormLayout()
         self.font = QFontComboBox(); self.font.setCurrentFont(QFont('Segoe UI'))
         self.font.currentFontChanged.connect(self.mark_pending); form.addRow('الخط', self.font)
+        import_font = QPushButton('استيراد خط TTF / OTF…'); import_font.clicked.connect(self.import_font)
+        form.addRow('', import_font)
         self.size = QDoubleSpinBox(); self.size.setRange(4, 200); self.size.setDecimals(1); self.size.setValue(16)
         self.size.valueChanged.connect(self.mark_pending); form.addRow('حجم الخط', self.size)
         self.bold = QCheckBox('خط عريض'); self.bold.toggled.connect(self.mark_pending); form.addRow('', self.bold)
@@ -145,6 +205,16 @@ class PageEditorDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء جميع تعديلات الصفحة')
         buttons.accepted.connect(self.finish); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
         self.reload()
+
+    def import_font(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'استيراد خط', '', 'ملفات الخطوط (*.ttf *.otf *.ttc)')
+        if not path:
+            return
+        try:families=install_font(path)
+        except Exception as exc:
+            QMessageBox.warning(self,'استيراد الخط',str(exc));return
+        self.font.setCurrentFont(QFont(families[0]))
+        self.status.setText(f'تم استيراد الخط: {families[0]}. سيظهر بعد إعادة تشغيل ورقة؛ تأكد من امتلاك ترخيص استخدامه وتوزيعه.')
 
     def reload(self):
         self.loading = True

@@ -29,6 +29,7 @@ from .printing import paint_pdf, requested_pages, PrintCancelled
 from .merge_dialog import MergeDialog
 from .conversion import convert_file, web_to_pdf, SUPPORTED_TYPES, ConversionCancelled
 from .editor_dialog import PageEditorDialog
+from .templates import encode_template, decode_template, builtin_template
 from .reading import PageImage, SearchDock, OcrDialog, ReviewDock
 from .textlayout import Glyph, character_map, find_matches, normal_text, select_region
 from .ocr import find_tesseract, run_ocr, JobCancelled
@@ -238,6 +239,7 @@ class MainWindow(QMainWindow):
         self.renderer=ProcessRenderer(self);self._view_serial=0;self._thumb_inflight=False;self._autosave_thread=None
         self.selection_rects = []; self.selection_char_ids = []; self.search_matches = []; self.pending_match = None
         self.review_annotations=[];self._stamp_label='للمراجعة'
+        self._page_editor=None;self._editing_page=-1
         self.resize(1320, 850)
         self.setMinimumSize(980, 650)
         self.setWindowTitle("ورقة | Waraqa")
@@ -314,6 +316,7 @@ class MainWindow(QMainWindow):
             ("text", "نص / علامة مائية", self.add_text),
             ("number", "ترقيم الصفحات", self.add_numbers),
             ("web", "صفحة ويب", self.import_web),
+            ("templates", "قوالب", self.insert_template),
         ]:
             self.buttons[key] = self.button(title, handler)
             tool_layout.addWidget(self.buttons[key])
@@ -487,6 +490,8 @@ class MainWindow(QMainWindow):
             (files, "printpreview", "معاينة الطباعة…", "Ctrl+Shift+P", self.print_preview),
             (files, "extract", "استخراج صفحات…", "Ctrl+E", self.extract_pages),
             (files, "blank", "إضافة صفحة فارغة", "Ctrl+N", self.add_blank),
+            (files, "inserttemplate", "إدراج صفحة من قالب…", "Ctrl+Alt+T", self.insert_template),
+            (files, "savetemplate", "حفظ الصفحة الحالية كقالب…", "", self.save_current_template),
             (files, "metadata", "خصائص المستند…", "", self.edit_metadata),
             (files, "close", "إغلاق مساحة العمل", "Ctrl+W", self.new_workspace),
             (edits, "undo", "تراجع", "Ctrl+Z", self.undo),
@@ -558,6 +563,9 @@ class MainWindow(QMainWindow):
         self.thumbnail_cache.clear()
 
     def new_workspace(self):
+        if self._page_editor is not None:
+            self._page_editor.finish()
+            if self._page_editor is not None:return
         if not self.confirm_discard():
             return
         self.close_pdfs()
@@ -784,7 +792,7 @@ class MainWindow(QMainWindow):
         self.print_button.setEnabled(bool(count))
         self.edit_button.setEnabled(bool(count))
         for key, button in self.buttons.items():
-            button.setEnabled(bool(count) or key in ("add", "web"))
+            button.setEnabled(bool(count) or key in ("add", "web", "templates"))
         self.undo_button.setEnabled(self.document.can_undo)
         self.redo_button.setEnabled(self.document.can_redo)
         for key, action in self.actions.items():
@@ -792,7 +800,7 @@ class MainWindow(QMainWindow):
                 action.setEnabled(self.document.can_undo)
             elif key == "redo":
                 action.setEnabled(self.document.can_redo)
-            elif key not in ("open", "openproject", "add", "blank", "about", "close", "merge", "create", "web"):
+            elif key not in ("open", "openproject", "add", "blank", "inserttemplate", "about", "close", "merge", "create", "web"):
                 action.setEnabled(bool(count))
 
     def pdf_for(self, source_id):
@@ -1093,6 +1101,35 @@ class MainWindow(QMainWindow):
         self.document.import_bytes("صفحة فارغة A4", data.getvalue())
         self.refresh(index)
 
+    def save_current_template(self):
+        if not self.document.pages:return
+        index=max(0,self.pages.currentRow())
+        path,_=QFileDialog.getSaveFileName(self,'حفظ قالب ورقة','قالب-ورقة.waraqt','قالب ورقة (*.waraqt)')
+        if not path:return
+        if not path.lower().endswith('.waraqt'):path += '.waraqt'
+        try:
+            data=self.document_job('تجهيز القالب','assemble',{'indexes':[index]})['data']
+            from .core import atomic_write
+            atomic_write(path,encode_template(data,Path(path).stem))
+            self.statusBar().showMessage('حُفظ القالب. يمكنك إدراجه لاحقًا في أي مستند.',10000)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc)
+
+    def insert_template(self):
+        choices=['تقرير عمل','خطاب رسمي','محضر اجتماع','فتح قالب محفوظ…']
+        choice,ok=QInputDialog.getItem(self,'قوالب ورقة','اختر قالبًا لإضافته كصفحة جديدة:',choices,0,False)
+        if not ok:return
+        try:
+            if choice=='فتح قالب محفوظ…':
+                path,_=QFileDialog.getOpenFileName(self,'إدراج قالب ورقة','','قالب ورقة (*.waraqt)')
+                if not path:return
+                name,data=decode_template(Path(path).read_bytes())
+            else:
+                name,data=builtin_template({'تقرير عمل':'report','خطاب رسمي':'letter','محضر اجتماع':'meeting'}[choice])
+            index=len(self.document.pages);self.document.import_bytes(name+'.pdf',data)
+            self.refresh(index);self.statusBar().showMessage(f'أُدرج القالب: {name}',10000)
+        except Exception as exc:self.error(exc)
+
     def add_text(self):
         if not self.document.pages:
             return
@@ -1107,17 +1144,39 @@ class MainWindow(QMainWindow):
     def edit_page_content(self):
         if not self.document.pages:
             return
+        if self._page_editor is not None:
+            self.stack.setCurrentWidget(self._page_editor)
+            return
         index = max(0, self.pages.currentRow())
         try:
             data=self.document_job('تجهيز الصفحة للتحرير','assemble',{'indexes':[index],'preview_context':(index+1,len(self.document.pages))})['data']
-            dialog = PageEditorDialog(data, self)
-            if dialog.exec() == QDialog.DialogCode.Accepted and dialog.data != dialog.initial_data:
-                self.document.replace_page(index, dialog.data)
-                self.refresh(index)
-                self.statusBar().showMessage('طُبّقت تعديلات الصفحة. اختر «حفظ نسخة» لحفظ المستند المعدّل.', 12000)
+            editor = PageEditorDialog(data, self, embedded=True)
+            self._page_editor=editor;self._editing_page=index
+            self.stack.addWidget(editor);self.stack.setCurrentWidget(editor)
+            editor.accepted.connect(self.finish_inline_edit)
+            editor.rejected.connect(self.cancel_inline_edit)
+            self.edit_button.setText('جارٍ التحرير')
+            self.statusBar().showMessage('وضع التحرير المباشر: اختر النص أو الصورة من الصفحة، ثم عدّل الخصائص من اللوحة اليمنى.')
         except JobCancelled:pass
         except Exception as exc:
             self.error(exc)
+
+    def finish_inline_edit(self):
+        editor=self._page_editor
+        if editor is None:return
+        index=self._editing_page;changed=editor.data!=editor.initial_data
+        self.stack.setCurrentWidget(self.splitter);self.stack.removeWidget(editor)
+        editor.deleteLater();self._page_editor=None;self._editing_page=-1;self.edit_button.setText('تعديل PDF')
+        if changed:self.document.replace_page(index,editor.data)
+        self.refresh(index)
+        self.statusBar().showMessage('طُبّقت تعديلات الصفحة. اختر «حفظ نسخة» لحفظ المستند المعدّل.',12000)
+
+    def cancel_inline_edit(self):
+        editor=self._page_editor
+        if editor is None:return
+        index=self._editing_page;self.stack.setCurrentWidget(self.splitter);self.stack.removeWidget(editor)
+        editor.deleteLater();self._page_editor=None;self._editing_page=-1;self.edit_button.setText('تعديل PDF')
+        self.refresh(max(0,index));self.statusBar().showMessage('أُلغيت تعديلات الصفحة.',8000)
 
     def add_numbers(self):
         if self.document.pages:
@@ -1304,6 +1363,10 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def closeEvent(self, event):
+        if self._page_editor is not None:
+            self._page_editor.finish()
+            if self._page_editor is not None:
+                event.ignore();return
         if self.confirm_discard():
             self.autosave_timer.stop();self.clear_recovery()
             self.thumb_timer.stop()
@@ -1317,6 +1380,8 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     ensure_font_support()
+    from .fonts import load_user_fonts
+    load_user_fonts()
     app.setApplicationName("ورقة")
     app.setApplicationVersion(__version__)
     app.setOrganizationName("Waraqa")

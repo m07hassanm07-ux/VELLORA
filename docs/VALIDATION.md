@@ -1,4 +1,4 @@
-# Validation of Waraqa 0.5.0
+# Validation of Waraqa 0.6.0
 
 Editing, runtime and setup validation: 22 October 2026. Host: Windows 11 x64, Python 3.12.14. Earlier conversion/browser observations from 0.2.0 on 21 October are explicitly retained below.
 
@@ -31,7 +31,7 @@ Screenshots are in `docs/screenshots/`. The sample contains no user documents or
 
 ## Packaged runtime and installer
 
-The final frozen 0.5.0 executable's `--self-test` uses synthetic input: saving two pages, AES-256 encryption/decryption, rendering, printing two pages to PDF, replacing text, searching, project encryption/restore, a review annotation, the editor dialog, and a child worker process. See `packaged-results.json` and the installed-runtime check in `installer-results.json`. No physical print job was sent.
+The final frozen 0.6.0 executable's `--self-test` uses synthetic input: saving two pages, AES-256 encryption/decryption, rendering, printing two pages to PDF, replacing text, searching, project encryption/restore, a review annotation, the inline editor, and a child worker process. See `packaged-results.json` and the installed-runtime check in `installer-results.json`. No physical print job was sent.
 
 Setup tests use a fresh directory under `tmp/` and `/TESTMODE`, which suppresses registry and shortcut changes. The test verifies installation, runs the installed executable's diagnostics, uninstalls, and checks that user-created documents survive and known runtime files are removed. See `installer-results.json`. Registration/shortcut source was reviewed; regular installation was not applied to the user's Windows profile during testing.
 

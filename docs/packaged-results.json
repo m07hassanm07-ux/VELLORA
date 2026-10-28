@@ -1,5 +1,5 @@
 {
-  "version": "0.5.0",
+  "version": "0.6.0",
   "passed": true,
   "merge_pages": 2,
   "print_pages": 2,
@@ -10,5 +10,8 @@
   "search": true,
   "project_roundtrip": true,
   "review_annotation": true,
-  "worker_process": true
+  "worker_process": true,
+  "inline_editor": true,
+  "business_templates": true,
+  "system_fonts": true
 }

@@ -20,6 +20,7 @@ def self_test(destination: str) -> int:
     from .tasks import process_job
     from .textlayout import find_matches
     from .review import apply_review, list_review
+    from .templates import builtin_template, encode_template, decode_template
     folder=Path(destination);folder.mkdir(parents=True,exist_ok=True)
     result={'version':__version__,'passed':False}
     try:
@@ -39,6 +40,10 @@ def self_test(destination: str) -> int:
         assert 'ORIGINAL' not in edited_text and 'EDITED' in edited_text
         assert find_matches(edited, 'EDITED')
         dialog=PageEditorDialog(edited);assert dialog.entries;dialog.reject()
+        inline=PageEditorDialog(edited,embedded=True);assert inline.embedded and inline.font.count()>0;inline.close()
+        template_name,template_pdf=builtin_template('report')
+        restored_name,restored_template=decode_template(encode_template(template_pdf,template_name))
+        assert restored_name==template_name and len(PdfReader(BytesIO(restored_template)).pages)==1
         (folder/'edited.pdf').write_bytes(edited)
         project=encode_snapshot(snapshot(model),password='diagnostic-project-password')
         restored=restore(decode_snapshot(project,'diagnostic-project-password'))
@@ -59,6 +64,7 @@ def self_test(destination: str) -> int:
         result.update({'passed':True,'merge_pages':2,'print_pages':2,'encrypted_roundtrip':True,
             'rendered':True,'text_replacement':True,'editor_dialog':True,'search':True,
             'project_roundtrip':True,'review_annotation':True,'worker_process':True})
+        result.update({'inline_editor':True,'business_templates':True,'system_fonts':True})
     except Exception as exc:
         import traceback
         result['error']=str(exc) or repr(exc)
