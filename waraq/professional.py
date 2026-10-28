@@ -8,11 +8,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+import ctypes
 import re
 
 import pypdfium2 as pdfium
+import pypdfium2.raw as pdfium_raw
 from PIL import Image, ImageDraw
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import (ArrayObject, BooleanObject, DictionaryObject,
+                           NameObject, NumberObject, RectangleObject,
+                           TextStringObject)
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,9 @@ class SignatureInfo:
     location: str
     signing_time: str
     has_cryptographic_value: bool
+
+
+FIELD_KINDS = {"text": "/Tx", "checkbox": "/Btn", "choice": "/Ch"}
 
 
 def _reader(data: bytes, password: str = "") -> PdfReader:
@@ -80,6 +88,80 @@ def fill_form_fields(data: bytes, values: dict[str, str], *, flatten: bool = Fal
     writer.write(output)
     writer.close()
     return output.getvalue()
+
+
+def add_form_field(data: bytes, page_index: int, kind: str, name: str,
+                   rect: tuple[float, float, float, float], *, value: str = "",
+                   options: list[str] | None = None) -> bytes:
+    """Create one interoperable AcroForm widget at viewer coordinates."""
+    kind = kind.lower().strip(); name = name.strip()
+    if kind not in FIELD_KINDS:
+        raise ValueError("نوع حقل النموذج غير مدعوم.")
+    if not name or len(name) > 200 or any(ch in name for ch in "\r\n\0"):
+        raise ValueError("اكتب اسمًا صالحًا ومختصرًا للحقل.")
+    reader = _reader(data)
+    if name in (reader.get_fields() or {}):
+        raise ValueError("يوجد حقل آخر بهذا الاسم.")
+    if not 0 <= page_index < len(reader.pages):
+        raise ValueError("رقم صفحة الحقل غير صالح.")
+    x, y, width, height = map(float, rect)
+    if width < 8 or height < 8:
+        raise ValueError("اسحب مساحة أكبر للحقل.")
+    with pdfium.PdfDocument(data) as document:
+        page = document[page_index]
+        display_width, display_height = page.get_size()
+        if x < 0 or y < 0 or x + width > display_width + .5 or y + height > display_height + .5:
+            page.close(); raise ValueError("يجب أن يقع الحقل داخل الصفحة.")
+        points = []
+        for dx, dy in ((x, y), (x + width, y + height)):
+            px, py = ctypes.c_double(), ctypes.c_double()
+            ok = pdfium_raw.FPDF_DeviceToPage(page, 0, 0, round(display_width*20),
+                round(display_height*20), 0, round(dx*20), round(dy*20), ctypes.byref(px), ctypes.byref(py))
+            if not ok:
+                page.close(); raise ValueError("تعذر تحويل موضع الحقل.")
+            points.append((px.value, py.value))
+        page.close()
+    box = (min(p[0] for p in points), min(p[1] for p in points),
+           max(p[0] for p in points), max(p[1] for p in points))
+    writer = PdfWriter(); writer.append(reader, import_outline=True)
+    page = writer.pages[page_index]
+    field = DictionaryObject({
+        NameObject("/Type"): NameObject("/Annot"), NameObject("/Subtype"): NameObject("/Widget"),
+        NameObject("/FT"): NameObject(FIELD_KINDS[kind]), NameObject("/T"): TextStringObject(name),
+        NameObject("/Rect"): RectangleObject(box), NameObject("/F"): NumberObject(4),
+        NameObject("/P"): page.indirect_reference,
+    })
+    if kind == "checkbox":
+        field[NameObject("/V")] = NameObject("/Yes" if value.casefold() in {"yes", "true", "1", "on"} else "/Off")
+        field[NameObject("/AS")] = field[NameObject("/V")]
+    else:
+        field[NameObject("/V")] = TextStringObject(value[:4000])
+        field[NameObject("/DA")] = TextStringObject("/Helv 10 Tf 0 g")
+        if kind == "choice":
+            choices = [str(item).strip() for item in (options or []) if str(item).strip()]
+            if not choices: raise ValueError("أضف خيارًا واحدًا على الأقل للقائمة.")
+            field[NameObject("/Opt")] = ArrayObject([TextStringObject(item[:500]) for item in choices])
+    reference = writer._add_object(field)
+    annotations = page.get("/Annots")
+    if annotations is None:
+        annotations = ArrayObject(); page[NameObject("/Annots")] = annotations
+    annotations.append(reference)
+    root = writer._root_object
+    acroform = root.get("/AcroForm")
+    acroform = acroform.get_object() if acroform else DictionaryObject()
+    fields = acroform.get("/Fields")
+    if fields is None: fields = ArrayObject(); acroform[NameObject("/Fields")] = fields
+    fields.append(reference)
+    acroform[NameObject("/NeedAppearances")] = BooleanObject(True)
+    if kind != "checkbox":
+        font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"), NameObject("/BaseFont"): NameObject("/Helvetica")})
+        resources = acroform.get("/DR") or DictionaryObject()
+        fonts = resources.get("/Font") or DictionaryObject(); fonts[NameObject("/Helv")] = writer._add_object(font)
+        resources[NameObject("/Font")] = fonts; acroform[NameObject("/DR")] = resources
+        acroform[NameObject("/DA")] = TextStringObject("/Helv 10 Tf 0 g")
+    root[NameObject("/AcroForm")] = writer._add_object(acroform)
+    output = BytesIO(); writer.write(output); writer.close(); return output.getvalue()
 
 
 def inspect_signatures(data: bytes, password: str = "") -> list[SignatureInfo]:

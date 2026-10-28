@@ -30,7 +30,7 @@ from .merge_dialog import MergeDialog
 from .conversion import convert_file, web_to_pdf, SUPPORTED_TYPES, ConversionCancelled
 from .editor_dialog import PageEditorDialog
 from .templates import encode_template, decode_template, builtin_template
-from .professional import (export_page_images, extract_text, fill_form_fields,
+from .professional import (add_form_field, export_page_images, extract_text, fill_form_fields,
                            inspect_signatures, list_form_fields, secure_redact_page)
 from .reading import PageImage, SearchDock, OcrDialog, ReviewDock
 from .textlayout import Glyph, character_map, find_matches, normal_text, select_region
@@ -257,6 +257,7 @@ class MainWindow(QMainWindow):
         self.renderer=ProcessRenderer(self);self._view_serial=0;self._thumb_inflight=False;self._autosave_thread=None
         self.selection_rects = []; self.selection_char_ids = []; self.search_matches = []; self.pending_match = None
         self.review_annotations=[];self._stamp_label='للمراجعة'
+        self._pending_form_field=None
         self._page_editor=None;self._editing_page=-1
         self.resize(1320, 850)
         self.setMinimumSize(980, 650)
@@ -526,7 +527,9 @@ class MainWindow(QMainWindow):
             (view, "zoom", "الحجم الطبيعي", "Ctrl+1", self.actual_size),
             (tools, 'ocr', 'التعرف على النص OCR…', '', self.ocr_document),
             (tools, 'forms', 'تعبئة حقول النموذج…', 'Ctrl+Alt+F', self.fill_pdf_form),
+            (tools, 'createform', 'إنشاء حقل نموذج…', '', self.begin_create_form_field),
             (tools, 'signatures', 'فحص التوقيعات…', '', self.check_signatures),
+            (tools, 'visualsignature', 'إضافة توقيع مرئي…', '', self.begin_visual_signature),
             (tools, 'exporttext', 'تصدير النص…', '', self.export_text_file),
             (tools, 'exportimages', 'تصدير الصفحات كصور…', '', self.export_page_images_dialog),
             (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
@@ -970,6 +973,18 @@ class MainWindow(QMainWindow):
         kind=gesture['tool'];self.image_label.tool='select';self.image_label.setCursor(Qt.CursorShape.IBeamCursor)
         if not self.document.pages or self.reading_key!=(self.document.pages[self.pages.currentRow()],len(self.document.pages)):return
         start,end=gesture['start'],gesture['end'];payload={}
+        if kind=='form':
+            x,y=min(start[0],end[0]),min(start[1],end[1]);w,h=abs(end[0]-start[0]),abs(end[1]-start[1])
+            spec=self._pending_form_field;self._pending_form_field=None
+            if spec is None:return
+            try:
+                data=self.assembled_bytes('إنشاء حقل النموذج')
+                result=add_form_field(data,self.pages.currentRow(),spec['kind'],spec['name'],(x,y,w,h),value=spec['value'],options=spec['options'])
+                self.document.replace_document(result,'نموذج PDF.pdf');self.refresh(self.pages.currentRow())
+                self.statusBar().showMessage(f'تم إنشاء الحقل «{spec["name"]}». اختر «حفظ نسخة» لحفظ النموذج.',12000)
+            except JobCancelled:pass
+            except Exception as exc:self.error(exc,exc)
+            return
         if kind=='redact':
             x,y=min(start[0],end[0]),min(start[1],end[1]);w,h=abs(end[0]-start[0]),abs(end[1]-start[1])
             if w<4 or h<4:self.statusBar().showMessage('اسحب مساحة أكبر للتنقيح.',8000);return
@@ -1004,6 +1019,38 @@ class MainWindow(QMainWindow):
         if not self.document.pages:return
         self.image_label.tool='redact';self.image_label.setCursor(Qt.CursorShape.CrossCursor)
         self.statusBar().showMessage('اسحب مستطيلًا فوق المعلومات الحساسة. سيطلب ورقة تأكيدًا قبل الحذف الدائم.',15000)
+
+    def begin_create_form_field(self):
+        if not self.document.pages:return
+        labels=['حقل نص','مربع اختيار','قائمة اختيار'];kinds=['text','checkbox','choice']
+        label,ok=QInputDialog.getItem(self,'إنشاء حقل نموذج','نوع الحقل:',labels,0,False)
+        if not ok:return
+        kind=kinds[labels.index(label)]
+        name,ok=QInputDialog.getText(self,'إنشاء حقل نموذج','اسم داخلي فريد للحقل:')
+        if not ok or not name.strip():return
+        value='';options=[]
+        if kind=='text':
+            value,ok=QInputDialog.getText(self,'القيمة الافتراضية','القيمة الافتراضية (اختيارية):')
+            if not ok:return
+        elif kind=='checkbox':value='Off'
+        else:
+            raw,ok=QInputDialog.getMultiLineText(self,'خيارات القائمة','اكتب كل خيار في سطر مستقل:')
+            if not ok:return
+            options=[line.strip() for line in raw.splitlines() if line.strip()]
+            if not options:self.error('أضف خيارًا واحدًا على الأقل للقائمة.');return
+            value=options[0]
+        self._pending_form_field={'kind':kind,'name':name.strip(),'value':value,'options':options}
+        self.image_label.tool='form';self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+        self.statusBar().showMessage('اسحب على الصفحة لتحديد مكان وحجم الحقل الجديد. Esc للإلغاء.',15000)
+
+    def begin_visual_signature(self):
+        if not self.document.pages:return
+        signer,ok=QInputDialog.getText(self,'توقيع مرئي','اسم الموقّع:')
+        if not ok or not signer.strip():return
+        from datetime import datetime
+        self._stamp_label=f'توقيع: {signer.strip()} — {datetime.now().strftime("%Y-%m-%d")}'[:60]
+        self.image_label.tool='stamp';self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+        self.statusBar().showMessage('اسحب لتحديد مكان التوقيع المرئي. هذا توقيع بصري وليس شهادة رقمية.',15000)
 
     def apply_review_action(self,action,payload):
         index=self.pages.currentRow()

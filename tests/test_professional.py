@@ -9,7 +9,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (ArrayObject, DictionaryObject, NameObject,
                            NumberObject, RectangleObject, TextStringObject)
 
-from waraq.professional import (export_page_images, extract_text,
+from waraq.professional import (add_form_field, export_page_images, extract_text,
                                 fill_form_fields, inspect_signatures,
                                 list_form_fields, secure_redact_page)
 from waraq.rendering import text_overlay
@@ -45,6 +45,18 @@ class ProfessionalTests(unittest.TestCase):
     def test_unknown_form_field_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "غير موجودة"):
             fill_form_fields(sample_form(), {"missing": "x"})
+
+    def test_create_text_checkbox_and_choice_fields(self):
+        writer = PdfWriter(); writer.add_blank_page(300, 400); stream = BytesIO(); writer.write(stream)
+        data = add_form_field(stream.getvalue(), 0, "text", "full_name", (20, 30, 180, 30), value="Ali")
+        data = add_form_field(data, 0, "checkbox", "approved", (20, 80, 20, 20), value="yes")
+        data = add_form_field(data, 0, "choice", "department", (20, 120, 160, 30), options=["HR", "IT"])
+        fields = {field.name: field for field in list_form_fields(data)}
+        self.assertEqual(set(fields), {"full_name", "approved", "department"})
+        self.assertEqual(fields["full_name"].value, "Ali")
+        self.assertEqual(fields["department"].options, ("HR", "IT"))
+        with self.assertRaisesRegex(ValueError, "بهذا الاسم"):
+            add_form_field(data, 0, "text", "full_name", (20, 200, 100, 20))
 
     def test_export_images_and_text(self):
         writer = PdfWriter(); writer.add_blank_page(144, 72); stream = BytesIO(); writer.write(stream)
