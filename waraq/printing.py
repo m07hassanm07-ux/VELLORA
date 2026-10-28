@@ -34,7 +34,8 @@ def requested_pages(printer: QPrinter, count: int, current: int = 0, selected: l
     return pages
 
 
-def paint_pdf(printer: QPrinter, data: bytes, indexes: list[int], progress: Callable[[int, int], bool] | None = None) -> int:
+def paint_pdf(printer: QPrinter, data: bytes, indexes: list[int], progress: Callable[[int, int], bool] | None = None,
+              *, pages_per_sheet: int = 1, grayscale: bool = False) -> int:
     """Fit PDF pages to printable paper at up to 300 DPI, with bounded memory.
 
     Content is rasterized for the print job only. Saved PDFs remain vector PDFs.
@@ -42,6 +43,8 @@ def paint_pdf(printer: QPrinter, data: bytes, indexes: list[int], progress: Call
     """
     if not indexes:
         raise ValueError("لم يتم اختيار صفحات للطباعة.")
+    if pages_per_sheet not in (1, 2, 4):
+        raise ValueError("عدد الصفحات في الورقة يجب أن يكون 1 أو 2 أو 4.")
     copies = max(1, printer.copyCount()) if not printer.supportsMultipleCopies() else 1
     if printer.collateCopies():
         sequence = indexes * copies
@@ -56,7 +59,8 @@ def paint_pdf(printer: QPrinter, data: bytes, indexes: list[int], progress: Call
                 if progress and not progress(offset, len(sequence)):
                     printer.abort()
                     raise PrintCancelled()
-                if offset and not printer.newPage():
+                slot = offset % pages_per_sheet
+                if offset and slot == 0 and not printer.newPage():
                     raise RuntimeError("رفضت الطابعة بدء صفحة جديدة.")
                 page = document[index]
                 try:
@@ -66,10 +70,17 @@ def paint_pdf(printer: QPrinter, data: bytes, indexes: list[int], progress: Call
                 scale = min(300, printer.resolution()) / 72
                 scale = min(scale, (22_000_000 / max(width * height, 1)) ** 0.5)
                 image = render_image(document, index, scale)
+                if grayscale:
+                    from PySide6.QtGui import QImage
+                    image = image.convertToFormat(QImage.Format.Format_Grayscale8)
                 paper = printer.pageLayout().paintRectPixels(printer.resolution())
-                ratio = min(paper.width() / image.width(), paper.height() / image.height())
-                target = QRectF((paper.width() - image.width() * ratio) / 2,
-                                (paper.height() - image.height() * ratio) / 2,
+                columns,rows=(1,1) if pages_per_sheet==1 else (2,1) if pages_per_sheet==2 else (2,2)
+                column,row=slot%columns,slot//columns
+                cell_width,cell_height=paper.width()/columns,paper.height()/rows
+                margin=min(cell_width,cell_height)*.02
+                ratio = min((cell_width-2*margin) / image.width(), (cell_height-2*margin) / image.height())
+                target = QRectF(paper.x()+column*cell_width+(cell_width-image.width()*ratio)/2,
+                                paper.y()+row*cell_height+(cell_height-image.height()*ratio)/2,
                                 image.width() * ratio, image.height() * ratio)
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
                 painter.drawImage(target, image)

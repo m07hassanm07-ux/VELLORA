@@ -61,6 +61,14 @@ class PrintingAndConversionTests(unittest.TestCase):
                     dark=sum(image.pixelColor(x,y).lightness()<200 for y in range(image.height()) for x in range(image.width()))
                     self.assertGreater(dark,100)
 
+    def test_two_pages_per_sheet_and_grayscale(self):
+        writer=PdfWriter();writer.add_blank_page(300,400);writer.add_blank_page(300,400)
+        stream=BytesIO();writer.write(stream)
+        with tempfile.TemporaryDirectory() as folder:
+            output=Path(folder)/'nup.pdf';printer=self.printer(output)
+            self.assertEqual(paint_pdf(printer,stream.getvalue(),[0,1],pages_per_sheet=2,grayscale=True),2)
+            self.assertEqual(len(PdfReader(output).pages),1)
+
     def test_cancel_print_stops_job(self):
         writer=PdfWriter();writer.add_blank_page(200,300);stream=BytesIO();writer.write(stream)
         with tempfile.TemporaryDirectory() as folder:

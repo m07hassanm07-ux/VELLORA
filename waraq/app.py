@@ -242,6 +242,19 @@ class SaveDialog(QDialog):
         return {'password':self.password.text(),'owner_password':self.owner.text() or self.password.text(),'permissions':permissions}
 
 
+class PrintOptionsDialog(QDialog):
+    def __init__(self,parent=None):
+        super().__init__(parent);self.setWindowTitle('خيارات الطباعة المتقدمة');self.setMinimumWidth(390)
+        layout=QVBoxLayout(self);note=QLabel('إعدادات الورق والاتجاه والوجهين والنسخ تُضبط من نافذة طابعة Windows.');note.setWordWrap(True);layout.addWidget(note)
+        form=QFormLayout();self.nup=QComboBox()
+        for title,value in [('صفحة واحدة في الورقة',1),('صفحتان في الورقة',2),('أربع صفحات في الورقة',4)]:self.nup.addItem(title,value)
+        self.grayscale=QCheckBox('طباعة بتدرج رمادي')
+        form.addRow('تخطيط الورقة',self.nup);form.addRow(self.grayscale);layout.addLayout(form)
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('متابعة الطباعة');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
+        buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1403,6 +1416,8 @@ class MainWindow(QMainWindow):
         dialog.setOption(QAbstractPrintDialog.PrintDialogOption.PrintCurrentPage, True)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        options=PrintOptionsDialog(self)
+        if options.exec()!=QDialog.DialogCode.Accepted:return
         progress = QProgressDialog("جاري تجهيز الطباعة…", "إلغاء", 0, len(self.document.pages), self)
         progress.setWindowModality(Qt.WindowModality.ApplicationModal)
         progress.setMinimumDuration(0)
@@ -1415,7 +1430,7 @@ class MainWindow(QMainWindow):
             with self.busy("جاري تجهيز الصفحات للطباعة…"):
                 data=self.document_job('تجهيز الطباعة','assemble',{})['data']
                 indexes = requested_pages(printer, len(self.document.pages), self.pages.currentRow(), self.selected())
-                count = paint_pdf(printer, data, indexes, tick)
+                count = paint_pdf(printer, data, indexes, tick,pages_per_sheet=options.nup.currentData(),grayscale=options.grayscale.isChecked())
             self.statusBar().showMessage(f"تم إرسال {count} صفحة إلى الطابعة.", 12000)
         except (PrintCancelled,JobCancelled):
             self.statusBar().showMessage("تم إلغاء الطباعة. قد تكون الصفحات التي أُرسلت بالفعل في قائمة انتظار الطابعة.", 15000)
