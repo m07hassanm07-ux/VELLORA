@@ -30,6 +30,8 @@ from .merge_dialog import MergeDialog
 from .conversion import convert_file, web_to_pdf, SUPPORTED_TYPES, ConversionCancelled
 from .editor_dialog import PageEditorDialog
 from .templates import encode_template, decode_template, builtin_template
+from .professional import (export_page_images, extract_text, fill_form_fields,
+                           inspect_signatures, list_form_fields)
 from .reading import PageImage, SearchDock, OcrDialog, ReviewDock
 from .textlayout import Glyph, character_map, find_matches, normal_text, select_region
 from .ocr import find_tesseract, run_ocr, JobCancelled
@@ -507,6 +509,10 @@ class MainWindow(QMainWindow):
             (view, "fit", "ملاءمة العرض", "Ctrl+0", self.fit_page),
             (view, "zoom", "الحجم الطبيعي", "Ctrl+1", self.actual_size),
             (tools, 'ocr', 'التعرف على النص OCR…', '', self.ocr_document),
+            (tools, 'forms', 'تعبئة حقول النموذج…', 'Ctrl+Alt+F', self.fill_pdf_form),
+            (tools, 'signatures', 'فحص التوقيعات…', '', self.check_signatures),
+            (tools, 'exporttext', 'تصدير النص…', '', self.export_text_file),
+            (tools, 'exportimages', 'تصدير الصفحات كصور…', '', self.export_page_images_dialog),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
             (review,'note','إضافة ملاحظة','Ctrl+Shift+N',lambda:self.begin_review('note')),
@@ -1207,6 +1213,82 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.document.set_metadata(title.text(), author.text())
             self.update_status()
+
+    def assembled_bytes(self, title='تجهيز المستند'):
+        """Build the current workspace through the cancellable worker."""
+        return self.document_job(title, 'assemble', {})['data']
+
+    def fill_pdf_form(self):
+        if not self.document.pages:return
+        try:
+            data=self.assembled_bytes('قراءة حقول النموذج')
+            fields=list_form_fields(data)
+            if not fields:
+                QMessageBox.information(self,'حقول النموذج','لا يحتوي المستند على حقول نموذج PDF قياسية قابلة للتعبئة.')
+                return
+            supported=[field for field in fields if field.kind in ('/Tx','/Ch','/Btn')]
+            lines=[]
+            for field in supported:
+                value=field.value
+                if value in ('/Off','None'):value=''
+                lines.append(f'{field.name}={value}')
+            text,ok=QInputDialog.getMultiLineText(
+                self,'تعبئة نموذج PDF',
+                'عدّل القيمة بعد علامة = لكل حقل. لمربعات الاختيار استخدم Yes أو Off.\n'
+                'لا تغيّر اسم الحقل قبل علامة =:', '\n'.join(lines))
+            if not ok:return
+            values={}
+            for number,line in enumerate(text.splitlines(),1):
+                if not line.strip():continue
+                if '=' not in line:raise ValueError(f'السطر {number} لا يحتوي على علامة =.')
+                name,value=line.split('=',1);name=name.strip()
+                if not name:raise ValueError(f'اسم الحقل مفقود في السطر {number}.')
+                values[name]=value
+            result=fill_form_fields(data,values)
+            self.document.replace_document(result,'نموذج معبأ.pdf')
+            self.refresh(self.pages.currentRow())
+            self.statusBar().showMessage(f'تم تحديث {len(values)} حقلًا. اختر «حفظ نسخة» لحفظ النتيجة.',12000)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def check_signatures(self):
+        if not self.document.pages:return
+        try:
+            signatures=inspect_signatures(self.assembled_bytes('فحص التوقيعات'))
+            if not signatures:
+                QMessageBox.information(self,'فحص التوقيعات','لا يحتوي المستند على حقول توقيع رقمي.')
+                return
+            rows=[]
+            for index,signature in enumerate(signatures,1):
+                state='توجد بيانات توقيع' if signature.has_cryptographic_value else 'حقل توقيع فارغ'
+                rows.append(f'{index}. {signature.name} — {state}\nالموقّع: {signature.signer or "غير مذكور"}\nالسبب: {signature.reason or "غير مذكور"}')
+            QMessageBox.information(self,'فحص التوقيعات','\n\n'.join(rows)+'\n\nملاحظة: يعرض ورقة بيانات التوقيع المضمنة، ولا يمنح شهادة ثقة قانونية دون سلسلة شهادات موثوقة.')
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def export_text_file(self):
+        if not self.document.pages:return
+        path,_=QFileDialog.getSaveFileName(self,'تصدير نص المستند',str(Path(self.default_name('text')).with_suffix('.txt')),'Text (*.txt)')
+        if not path:return
+        if not path.lower().endswith('.txt'):path+='.txt'
+        try:
+            text=extract_text(self.assembled_bytes('استخراج النص'))
+            atomic_write(path,('\ufeff'+text).encode('utf-8'))
+            self.statusBar().showMessage(f'تم تصدير النص: {path}',12000)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def export_page_images_dialog(self):
+        if not self.document.pages:return
+        folder=QFileDialog.getExistingDirectory(self,'اختيار مجلد صور الصفحات')
+        if not folder:return
+        dpi,ok=QInputDialog.getInt(self,'دقة الصور','الدقة بالنقطة لكل بوصة (DPI):',150,72,600,25)
+        if not ok:return
+        try:
+            paths=export_page_images(self.assembled_bytes('تجهيز صور الصفحات'),folder,dpi=dpi)
+            QMessageBox.information(self,'اكتمل التصدير',f'تم إنشاء {len(paths)} صورة PNG في:\n{folder}')
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
 
     def default_name(self, suffix="edited"):
         if self.last_output:
