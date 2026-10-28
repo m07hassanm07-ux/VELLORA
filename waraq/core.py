@@ -15,6 +15,7 @@ import time
 import uuid
 
 from pypdf import PdfReader, PdfWriter
+from pypdf.constants import UserAccessPermissions
 from . import __version__
 
 
@@ -255,7 +256,9 @@ class Document:
         self.checkpoint()
         self.metadata.update({"/Title": title, "/Author": author})
 
-    def build_bytes(self, indexes: list[int] | None = None, password: str = "", overlay_renderer: OverlayRenderer | None = None, preview_context: tuple[int, int] | None = None, progress=None) -> bytes:
+    def build_bytes(self, indexes: list[int] | None = None, password: str = "", owner_password: str = "",
+                    permissions: int | None = None, overlay_renderer: OverlayRenderer | None = None,
+                    preview_context: tuple[int, int] | None = None, progress=None) -> bytes:
         indexes = list(range(len(self.pages))) if indexes is None else indexes
         if not indexes:
             raise ValueError("لا توجد صفحات للحفظ.")
@@ -296,7 +299,8 @@ class Document:
         writer.pdf_header = max(header, "%PDF-1.7")
         writer.add_metadata({k: v for k, v in self.metadata.items() if v} | {"/Producer": f"Waraq PDF {__version__}"})
         if password:
-            writer.encrypt(password, algorithm="AES-256")
+            flags = UserAccessPermissions(permissions) if permissions is not None else UserAccessPermissions(-4)
+            writer.encrypt(password, owner_password or password, permissions_flag=flags, algorithm="AES-256")
         output = BytesIO()
         writer.write(output)
         writer.close()

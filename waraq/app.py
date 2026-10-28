@@ -31,7 +31,7 @@ from .conversion import convert_file, web_to_pdf, SUPPORTED_TYPES, ConversionCan
 from .editor_dialog import PageEditorDialog
 from .templates import encode_template, decode_template, builtin_template
 from .professional import (export_page_images, extract_text, fill_form_fields,
-                           inspect_signatures, list_form_fields)
+                           inspect_signatures, list_form_fields, secure_redact_page)
 from .reading import PageImage, SearchDock, OcrDialog, ReviewDock
 from .textlayout import Glyph, character_map, find_matches, normal_text, select_region
 from .ocr import find_tesseract, run_ocr, JobCancelled
@@ -198,16 +198,24 @@ class SaveDialog(QDialog):
         self.protect = QCheckBox("حماية النسخة بكلمة مرور")
         self.password = QLineEdit()
         self.confirm = QLineEdit()
-        for field in (self.password, self.confirm):
+        self.owner = QLineEdit()
+        for field in (self.password, self.confirm, self.owner):
             field.setEchoMode(QLineEdit.EchoMode.Password)
             field.setEnabled(False)
         self.protect.toggled.connect(self.password.setEnabled)
         self.protect.toggled.connect(self.confirm.setEnabled)
+        self.protect.toggled.connect(self.owner.setEnabled)
         self.protect.setChecked(protected_input)
         form = QFormLayout()
         form.addRow(self.protect)
         form.addRow("كلمة المرور", self.password)
         form.addRow("تأكيد الكلمة", self.confirm)
+        form.addRow("كلمة مرور المسؤول", self.owner)
+        self.allow_print=QCheckBox('السماح بالطباعة');self.allow_print.setChecked(True)
+        self.allow_copy=QCheckBox('السماح بالنسخ واستخراج النص');self.allow_copy.setChecked(True)
+        self.allow_modify=QCheckBox('السماح بالتعديل والتجميع والتعليقات');self.allow_modify.setChecked(True)
+        for option in (self.allow_print,self.allow_copy,self.allow_modify):
+            option.setEnabled(False);self.protect.toggled.connect(option.setEnabled);form.addRow(option)
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Save).setText("اختيار مكان الحفظ")
@@ -224,6 +232,14 @@ class SaveDialog(QDialog):
 
     def output_password(self):
         return self.password.text() if self.protect.isChecked() else ""
+
+    def security_options(self):
+        if not self.protect.isChecked():return {'password':'','owner_password':'','permissions':None}
+        reserved=sum(1 << bit for bit in range(6,32));permissions=reserved
+        if self.allow_print.isChecked():permissions|=4|2048
+        if self.allow_copy.isChecked():permissions|=16|512
+        if self.allow_modify.isChecked():permissions|=8|32|256|1024
+        return {'password':self.password.text(),'owner_password':self.owner.text() or self.password.text(),'permissions':permissions}
 
 
 class MainWindow(QMainWindow):
@@ -513,6 +529,7 @@ class MainWindow(QMainWindow):
             (tools, 'signatures', 'فحص التوقيعات…', '', self.check_signatures),
             (tools, 'exporttext', 'تصدير النص…', '', self.export_text_file),
             (tools, 'exportimages', 'تصدير الصفحات كصور…', '', self.export_page_images_dialog),
+            (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
             (review,'note','إضافة ملاحظة','Ctrl+Shift+N',lambda:self.begin_review('note')),
@@ -900,10 +917,10 @@ class MainWindow(QMainWindow):
         state=snapshot(self.document,history=False)
         return run_task(self,label,lambda report,cancelled:process_job(state,kind,params,report,cancelled))
 
-    def write_pdf_background(self,path,indexes,password):
+    def write_pdf_background(self,path,indexes,security):
         state=snapshot(self.document,history=False)
         def save(report,cancelled):
-            result=process_job(state,'assemble',{'indexes':indexes,'password':password},report,cancelled)
+            result=process_job(state,'assemble',{'indexes':indexes,**security},report,cancelled)
             report(0,0,'جاري حفظ النسخة…')
             if cancelled():raise JobCancelled()
             atomic_write(path,result['data'])
@@ -953,6 +970,22 @@ class MainWindow(QMainWindow):
         kind=gesture['tool'];self.image_label.tool='select';self.image_label.setCursor(Qt.CursorShape.IBeamCursor)
         if not self.document.pages or self.reading_key!=(self.document.pages[self.pages.currentRow()],len(self.document.pages)):return
         start,end=gesture['start'],gesture['end'];payload={}
+        if kind=='redact':
+            x,y=min(start[0],end[0]),min(start[1],end[1]);w,h=abs(end[0]-start[0]),abs(end[1]-start[1])
+            if w<4 or h<4:self.statusBar().showMessage('اسحب مساحة أكبر للتنقيح.',8000);return
+            if QMessageBox.warning(self,'تنقيح آمن',
+                'سيُحذف كل المحتوى الأصلي داخل الصفحة المحددة بتحويل الصفحة إلى صورة ثابتة، '
+                'ولا يمكن استعادة النص أو العناصر منها بعد حفظ النسخة. هل تريد التطبيق؟',
+                QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+            try:
+                data=self.assembled_bytes('تجهيز التنقيح الآمن')
+                result=secure_redact_page(data,self.pages.currentRow(),[(x,y,w,h)])
+                self.document.replace_document(result,'مستند منقح.pdf');self.refresh(self.pages.currentRow())
+                self.statusBar().showMessage('تم التنقيح الآمن. اختر «حفظ نسخة» لإنشاء الملف النهائي.',12000)
+            except JobCancelled:pass
+            except Exception as exc:self.error(exc,exc)
+            return
         if kind=='note':
             text,ok=QInputDialog.getMultiLineText(self,'ملاحظة','نص الملاحظة:')
             if not ok or not text.strip():return
@@ -966,6 +999,11 @@ class MainWindow(QMainWindow):
             payload={'rect':(x,y,w,h),'text':self._stamp_label}
         else:return
         self.apply_review_action(kind,payload)
+
+    def begin_secure_redaction(self):
+        if not self.document.pages:return
+        self.image_label.tool='redact';self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+        self.statusBar().showMessage('اسحب مستطيلًا فوق المعلومات الحساسة. سيطلب ورقة تأكيدًا قبل الحذف الدائم.',15000)
 
     def apply_review_action(self,action,payload):
         index=self.pages.currentRow()
@@ -1377,7 +1415,7 @@ class MainWindow(QMainWindow):
                 if result != QMessageBox.StandardButton.Yes:
                     return False
         try:
-            self.write_pdf_background(path,indexes,options.output_password())
+            self.write_pdf_background(path,indexes,options.security_options())
             if indexes is None:
                 self.document.mark_saved()
                 self.last_output = Path(path)
@@ -1424,7 +1462,7 @@ class MainWindow(QMainWindow):
                     while path.exists():
                         path = Path(folder) / f"{base}-{suffix}.pdf"
                         suffix += 1
-                    self.write_pdf_background(path,list(range(start,end)),options.output_password())
+                    self.write_pdf_background(path,list(range(start,end)),options.security_options())
                     written.append(path)
             QMessageBox.information(self, "اكتمل التقسيم", f"تم إنشاء {len(written)} ملف PDF في:\n{folder}")
         except JobCancelled:self.statusBar().showMessage(f'أُلغي التقسيم بعد إنشاء {len(written)} ملف مكتمل.',12000)

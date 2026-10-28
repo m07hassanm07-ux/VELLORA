@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 
 import pypdfium2 as pdfium
-from PIL import Image
+from PIL import Image, ImageDraw
 from pypdf import PdfReader, PdfWriter
 
 
@@ -130,3 +130,46 @@ def export_page_images(data: bytes, folder: Path | str, *, dpi: int = 150,
             bitmap.close()
             page.close()
     return written
+
+
+def secure_redact_page(data: bytes, page_index: int, rects: list[tuple[float, float, float, float]],
+                       *, dpi: int = 200, color: str = "black") -> bytes:
+    """Permanently redact regions by flattening the selected page to pixels.
+
+    Rasterising the complete page deliberately removes the original text,
+    images and hidden objects from that page. Other pages remain unchanged.
+    Coordinates use the same top-left PDF-point space as Waraqa's viewer.
+    """
+    if not rects:
+        raise ValueError("حدد مساحة واحدة على الأقل للتنقيح.")
+    reader = _reader(data)
+    if not 0 <= page_index < len(reader.pages):
+        raise ValueError("رقم صفحة التنقيح غير صالح.")
+    with pdfium.PdfDocument(data) as document:
+        page = document[page_index]
+        width, height = page.get_size()
+        scale = dpi / 72
+        bitmap = page.render(scale=scale, rev_byteorder=True)
+        image = bitmap.to_pil().convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for raw in rects:
+            x, y, w, h = map(float, raw)
+            if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > width + .5 or y + h > height + .5:
+                raise ValueError("مساحة التنقيح يجب أن تقع داخل الصفحة.")
+            draw.rectangle((round(x*scale), round(y*scale), round((x+w)*scale), round((y+h)*scale)), fill=color)
+        flattened = BytesIO()
+        image.save(flattened, format="PDF", resolution=dpi)
+        bitmap.close(); page.close()
+    replacement = PdfReader(BytesIO(flattened.getvalue())).pages[0]
+    # Match the original page boxes exactly; Pillow's PDF dimensions can vary
+    # by a fraction of a point because pixels are integral.
+    original = reader.pages[page_index]
+    replacement.mediabox = original.mediabox
+    replacement.cropbox = original.cropbox
+    writer = PdfWriter()
+    for index, current in enumerate(reader.pages):
+        writer.add_page(replacement if index == page_index else current)
+    if reader.metadata:
+        writer.add_metadata({str(k): str(v) for k, v in reader.metadata.items() if v is not None})
+    output = BytesIO(); writer.write(output); writer.close()
+    return output.getvalue()

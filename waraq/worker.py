@@ -22,7 +22,9 @@ def run_job(directory):
         kind=request['kind'];params=request['params'];progress(0,0,'جاري قراءة المستند…')
         state=decode_snapshot((folder/'state.bin').read_bytes());model=restore(state)
         if kind=='assemble':
-            data=model.build_bytes(indexes=params.get('indexes'),password=params.get('password',''),overlay_renderer=text_overlay,progress=progress,preview_context=params.get('preview_context'))
+            data=model.build_bytes(indexes=params.get('indexes'),password=params.get('password',''),
+                owner_password=params.get('owner_password',''),permissions=params.get('permissions'),
+                overlay_renderer=text_overlay,progress=progress,preview_context=params.get('preview_context'))
         elif kind=='search':
             from .textlayout import find_matches
             data=model.build_bytes(overlay_renderer=text_overlay,progress=progress)

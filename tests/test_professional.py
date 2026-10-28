@@ -11,7 +11,9 @@ from pypdf.generic import (ArrayObject, DictionaryObject, NameObject,
 
 from waraq.professional import (export_page_images, extract_text,
                                 fill_form_fields, inspect_signatures,
-                                list_form_fields)
+                                list_form_fields, secure_redact_page)
+from waraq.rendering import text_overlay
+from waraq.core import Overlay
 
 
 def sample_form():
@@ -56,6 +58,13 @@ class ProfessionalTests(unittest.TestCase):
     def test_unsigned_document(self):
         writer = PdfWriter(); writer.add_blank_page(100, 100); stream = BytesIO(); writer.write(stream)
         self.assertEqual(inspect_signatures(stream.getvalue()), [])
+
+    def test_secure_redaction_removes_page_text_objects(self):
+        data = text_overlay(300, 400, Overlay("SECRET-123", "center", 24))
+        self.assertIn("SECRET-123", extract_text(data))
+        result = secure_redact_page(data, 0, [(0, 0, 300, 400)], dpi=72)
+        self.assertNotIn("SECRET-123", extract_text(result))
+        self.assertEqual(len(PdfReader(BytesIO(result)).pages), 1)
 
 
 if __name__ == "__main__": unittest.main()

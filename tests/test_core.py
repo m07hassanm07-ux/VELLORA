@@ -105,6 +105,19 @@ class DocumentTests(unittest.TestCase):
         self.assertTrue(output.decrypt("output-pass"))
         self.assertEqual(len(output.pages), 1)
 
+    def test_encrypted_output_honors_restricted_permissions_and_owner_password(self):
+        # Reserved ISO bits plus printing only; copy and modification are denied.
+        permissions = sum(1 << bit for bit in range(6, 32)) | 4 | 2048
+        output = PdfReader(BytesIO(self.doc.build_bytes(
+            password="reader-pass", owner_password="owner-pass", permissions=permissions)))
+        self.assertEqual(output.decrypt("reader-pass").name, "USER_PASSWORD")
+        access = output.user_access_permissions
+        self.assertTrue(access.PRINT in access)
+        self.assertFalse(access.EXTRACT in access)
+        fresh = PdfReader(BytesIO(self.doc.build_bytes(
+            password="reader-pass", owner_password="owner-pass", permissions=permissions)))
+        self.assertEqual(fresh.decrypt("owner-pass").name, "OWNER_PASSWORD")
+
     def test_failed_import_and_save_keep_state_and_destination(self):
         before = self.doc.fingerprint()
         with self.assertRaises(Exception):
