@@ -6,6 +6,7 @@ from pathlib import Path
 import math
 import sys
 import traceback
+import logging
 import os
 
 from PySide6.QtCore import Qt, QSize, QTimer, Signal, QItemSelectionModel, QRect, QSettings
@@ -76,6 +77,20 @@ QLabel#emptyText { font-size: 12pt; color: #67808f; }
 QLabel#emptyMark { font-size: 54pt; font-weight: 750; background: #dff2ec; color: #167761; border-radius: 22px; }
 QSplitter::handle { background: #dce5ec; width: 1px; }
 QToolTip { background: #173d4c; color: white; border: none; padding: 5px; }
+"""
+
+DARK_STYLE = """
+QMainWindow, QDialog { background: #17232b; color: #e8f0f4; }
+QMenuBar, QMenu, QFrame#header, QFrame#tools, QFrame#sidebar, QStatusBar { background: #1d2c35; color: #e8f0f4; border-color: #38505d; }
+QLabel#brand { color: #7ed8c0; } QLabel#tagline, QLabel#subtle { color: #aec0ca; }
+QLabel#badge { background: #24463e; color: #9ae2cf; }
+QPushButton { background: #263944; color: #e8f0f4; border-color: #49616e; }
+QPushButton:hover { background: #31505a; } QPushButton:disabled { color: #70828b; background: #202e36; }
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QListWidget { background: #21323c; color: #edf4f7; border-color: #48606c; }
+QListWidget::item { background: #263944; color: #dce8ed; border-color: #415963; }
+QListWidget::item:selected { background: #245c50; color: white; border-color: #62c6ad; }
+QWidget#previewSurface, QScrollArea { background: #10191f; }
+QLabel#pageImage { background: white; }
 """
 
 
@@ -271,6 +286,7 @@ class MainWindow(QMainWindow):
         self.selection_rects = []; self.selection_char_ids = []; self.search_matches = []; self.pending_match = None
         self.review_annotations=[];self._stamp_label='للمراجعة'
         self._pending_form_field=None
+        self.settings=QSettings();self.dark_mode=str(self.settings.value('ui/dark_mode','false')).lower()=='true'
         self._page_editor=None;self._editing_page=-1
         self.resize(1320, 850)
         self.setMinimumSize(980, 650)
@@ -289,6 +305,7 @@ class MainWindow(QMainWindow):
         self.thumb_queue: list[int] = []
         self.make_ui()
         self.make_menu()
+        self.apply_theme(self.dark_mode)
         self.search_dock = SearchDock(self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.search_dock); self.search_dock.hide()
         self.search_dock.search_requested.connect(self.search_document)
@@ -559,10 +576,50 @@ class MainWindow(QMainWindow):
             action.triggered.connect(handler)
             parent.addAction(action)
             self.actions[key] = action
+        view.addSeparator();dark=QAction('الوضع الداكن',self);dark.setCheckable(True);dark.setChecked(self.dark_mode);dark.triggered.connect(self.toggle_dark_mode);view.addAction(dark);self.actions['dark']=dark
+        files.addSeparator();self.recent_menu=files.addMenu('الملفات الحديثة');self.refresh_recent_menu()
+
+    def apply_theme(self,dark):
+        QApplication.instance().setStyleSheet(STYLE+(DARK_STYLE if dark else ''))
+
+    def toggle_dark_mode(self,checked):
+        self.dark_mode=bool(checked);self.settings.setValue('ui/dark_mode',self.dark_mode);self.apply_theme(self.dark_mode)
+
+    def recent_paths(self):
+        value=self.settings.value('recent/files',[]) or []
+        if isinstance(value,str):value=[value]
+        return [str(path) for path in value if str(path).strip()][:10]
+
+    def remember_recent(self,paths):
+        recent=self.recent_paths()
+        for raw in paths:
+            path=str(Path(raw).resolve())
+            if not Path(path).is_file():continue
+            recent=[item for item in recent if item.casefold()!=path.casefold()];recent.insert(0,path)
+        self.settings.setValue('recent/files',recent[:10]);self.refresh_recent_menu()
+
+    def refresh_recent_menu(self):
+        if not hasattr(self,'recent_menu'):return
+        self.recent_menu.clear();paths=self.recent_paths()
+        for path in paths:
+            action=self.recent_menu.addAction(Path(path).name);action.setToolTip(path);action.triggered.connect(lambda checked=False,p=path:self.open_recent(p))
+        if not paths:
+            action=self.recent_menu.addAction('لا توجد ملفات حديثة');action.setEnabled(False)
+        else:
+            self.recent_menu.addSeparator();clear=self.recent_menu.addAction('مسح القائمة');clear.triggered.connect(lambda:self.clear_recent())
+
+    def clear_recent(self):
+        self.settings.remove('recent/files');self.refresh_recent_menu()
+
+    def open_recent(self,path):
+        if Path(path).is_file():self.import_paths([path],append=False)
+        else:
+            self.settings.setValue('recent/files',[item for item in self.recent_paths() if item.casefold()!=path.casefold()]);self.refresh_recent_menu();self.error('لم يعد الملف موجودًا في هذا المكان.')
 
     def error(self, message, exception=None):
         if exception is not None:
             traceback.print_exception(exception)
+            logging.getLogger('waraqa').exception('Operation failed',exc_info=exception)
         QMessageBox.warning(self, "تعذر إكمال العملية", str(message))
 
     @contextmanager
@@ -764,6 +821,7 @@ class MainWindow(QMainWindow):
                     failures.append(f"{Path(path).name}: {exc}")
                     break
         if imported:
+            self.remember_recent(paths)
             if not append:
                 self.close_pdfs()
                 self.clear_recovery();self.project_path=None;self.project_password='';self._autosave_fingerprint=None
@@ -839,7 +897,7 @@ class MainWindow(QMainWindow):
                 action.setEnabled(self.document.can_undo)
             elif key == "redo":
                 action.setEnabled(self.document.can_redo)
-            elif key not in ("open", "openproject", "add", "blank", "inserttemplate", "about", "close", "merge", "create", "web"):
+            elif key not in ("open", "openproject", "add", "blank", "inserttemplate", "about", "close", "merge", "create", "web", "dark"):
                 action.setEnabled(bool(count))
 
     def pdf_for(self, source_id):
@@ -1568,6 +1626,8 @@ def main():
     app.setApplicationVersion(__version__)
     app.setOrganizationName("Waraqa")
     app.setStyle("Fusion")
+    from .logging_setup import configure_logging
+    configure_logging()
     app.setStyleSheet(STYLE)
     app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
     window = MainWindow()
