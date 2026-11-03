@@ -43,6 +43,7 @@ from .projects import snapshot, restore, encode_snapshot, decode_snapshot, Recov
 from .tasks import TaskThread,run_task,process_job
 from .render_service import ProcessRenderer
 from .compare import compare_pdfs
+from .signatures import sign_pkcs12,validate_signatures
 
 
 STYLE = """
@@ -577,6 +578,8 @@ class MainWindow(QMainWindow):
             (tools, 'preflight', 'فحص المستند قبل النشر…', '', self.preflight_document),
             (tools, 'sanitize', 'تنظيف البيانات الخفية…', '', self.sanitize_document),
             (tools, 'redactsearch', 'تنقيح نص في جميع الصفحات…', '', self.redact_text_everywhere),
+            (tools, 'digitalsign', 'توقيع رقمي بشهادة PFX…', '', self.sign_with_certificate),
+            (tools, 'verifydigital', 'التحقق من توقيعات ملف…', '', self.verify_signature_file),
             (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
@@ -1597,6 +1600,43 @@ class MainWindow(QMainWindow):
             result,count=run_task(self,'تنقيح النص',lambda report,cancelled:secure_redact_text(data,query,dpi=200,progress=report))
             self.document.replace_document(result,'مستند منقح.pdf');self.refresh(self.pages.currentRow())
             self.statusBar().showMessage(f'تم تنقيح {count} موضعًا. اختر «حفظ نسخة» لحفظ النتيجة.',15000)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def sign_with_certificate(self):
+        if not self.document.pages:return
+        certificate,_=QFileDialog.getOpenFileName(self,'اختيار شهادة التوقيع','','PKCS#12 (*.pfx *.p12)')
+        if not certificate:return
+        password,ok=QInputDialog.getText(self,'كلمة مرور الشهادة','كلمة مرور ملف الشهادة:',QLineEdit.EchoMode.Password)
+        if not ok:return
+        reason,ok=QInputDialog.getText(self,'سبب التوقيع','سبب التوقيع (اختياري):')
+        if not ok:return
+        location,ok=QInputDialog.getText(self,'مكان التوقيع','مكان التوقيع (اختياري):')
+        if not ok:return
+        path,_=QFileDialog.getSaveFileName(self,'حفظ الملف الموقّع',self.default_name('signed'),'PDF (*.pdf)')
+        if not path:return
+        if not path.lower().endswith('.pdf'):path+='.pdf'
+        try:
+            data=self.assembled_bytes('تجهيز النسخة النهائية للتوقيع')
+            signed=run_task(self,'توقيع PDF',lambda report,cancelled:sign_pkcs12(data,certificate,password,reason=reason,location=location))
+            atomic_write(path,signed);self.last_output=Path(path)
+            QMessageBox.information(self,'اكتمل التوقيع',f'تم إنشاء الملف الموقّع:\n{path}\n\nلا تعدّل هذا الملف بعد التوقيع؛ أي تعديل لاحق قد يجعل التوقيع غير صالح.')
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def verify_signature_file(self):
+        path,_=QFileDialog.getOpenFileName(self,'اختيار ملف موقّع للتحقق','','PDF (*.pdf)')
+        if not path:return
+        try:
+            results=run_task(self,'التحقق من التوقيعات',lambda report,cancelled:validate_signatures(Path(path).read_bytes()))
+            if not results:
+                QMessageBox.information(self,'التحقق من التوقيع','لا يحتوي الملف على توقيعات رقمية مضمّنة.');return
+            lines=[]
+            for index,result in enumerate(results,1):
+                integrity='سليم' if result.intact and result.valid else 'غير سليم'
+                trust='موثوق بسلسلة الشهادات المتاحة' if result.trusted else 'الشهادة غير موثوقة محليًا أو ذاتية التوقيع'
+                lines.append(f'{index}. {result.signer or result.field_name}\nسلامة التوقيع: {integrity}\nالثقة: {trust}\n{result.summary}')
+            QMessageBox.information(self,'نتيجة التحقق','\n\n'.join(lines))
         except JobCancelled:pass
         except Exception as exc:self.error(exc,exc)
 
