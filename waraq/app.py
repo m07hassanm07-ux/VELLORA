@@ -40,6 +40,7 @@ from .ocr import find_tesseract, run_ocr, JobCancelled
 from .projects import snapshot, restore, encode_snapshot, decode_snapshot, RecoveryStore, LOCKED
 from .tasks import TaskThread,run_task,process_job
 from .render_service import ProcessRenderer
+from .compare import compare_pdfs
 
 
 STYLE = """
@@ -567,6 +568,7 @@ class MainWindow(QMainWindow):
             (tools, 'addattachment', 'إضافة مرفق إلى PDF…', '', self.add_pdf_attachment),
             (tools, 'extractattachment', 'استخراج مرفق…', '', self.extract_pdf_attachment),
             (tools, 'removeattachment', 'حذف مرفق…', '', self.remove_pdf_attachment),
+            (tools, 'compare', 'مقارنة مع نسخة أخرى…', 'Ctrl+Alt+C', self.compare_with_pdf),
             (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
@@ -1508,6 +1510,23 @@ class MainWindow(QMainWindow):
             if QMessageBox.question(self,'حذف المرفق',f'حذف المرفق «{name}» من النسخة الحالية؟',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
             result=remove_attachment(data,name);self.document.replace_document(result,'مستند بدون المرفق.pdf');self.refresh(self.pages.currentRow())
             self.statusBar().showMessage('تم حذف المرفق. اختر «حفظ نسخة» لحفظ النتيجة.',12000)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def compare_with_pdf(self):
+        if not self.document.pages:return
+        path,_=QFileDialog.getOpenFileName(self,'اختيار نسخة PDF للمقارنة','','PDF (*.pdf)')
+        if not path:return
+        try:
+            first=self.assembled_bytes('تجهيز النسخة الحالية للمقارنة');second=Path(path).read_bytes()
+            results=run_task(self,'مقارنة المستندين',lambda report,cancelled:compare_pdfs(first,second,progress=report))
+            dialog=QDialog(self);dialog.setWindowTitle('نتيجة مقارنة المستندين');dialog.resize(620,520)
+            layout=QVBoxLayout(dialog);changed=[item for item in results if item.status!='same']
+            summary=QLabel(f'عدد الصفحات: {len(results)}  •  الصفحات المختلفة: {len(changed)}');summary.setWordWrap(True);layout.addWidget(summary)
+            items=QListWidget();labels={'same':'متطابقة','changed':'معدّلة','added':'مضافة في النسخة الأخرى','removed':'محذوفة من النسخة الأخرى'}
+            for item in results:
+                items.addItem(f'صفحة {item.page}: {labels[item.status]}  •  تشابه النص {item.text_similarity*100:.1f}%  •  اختلاف بصري {item.visual_difference*100:.2f}%')
+            layout.addWidget(items);buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Close);buttons.rejected.connect(dialog.reject);buttons.accepted.connect(dialog.accept);layout.addWidget(buttons);dialog.exec()
         except JobCancelled:pass
         except Exception as exc:self.error(exc,exc)
 
