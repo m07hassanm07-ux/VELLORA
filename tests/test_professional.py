@@ -9,7 +9,8 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (ArrayObject, DictionaryObject, NameObject,
                            NumberObject, RectangleObject, TextStringObject)
 
-from waraq.professional import (add_form_field, export_page_images, extract_text,
+from waraq.professional import (add_attachment, attachment_bytes, list_attachments, remove_attachment,
+                                add_form_field, export_page_images, extract_text,
                                 fill_form_fields, inspect_signatures,
                                 list_form_fields, secure_redact_page)
 from waraq.rendering import text_overlay
@@ -70,6 +71,14 @@ class ProfessionalTests(unittest.TestCase):
     def test_unsigned_document(self):
         writer = PdfWriter(); writer.add_blank_page(100, 100); stream = BytesIO(); writer.write(stream)
         self.assertEqual(inspect_signatures(stream.getvalue()), [])
+
+    def test_attachment_lifecycle(self):
+        writer=PdfWriter();writer.add_blank_page(100,100);stream=BytesIO();writer.write(stream)
+        data=add_attachment(stream.getvalue(),'notes.txt',b'hello','Work notes')
+        self.assertEqual([(item.name,item.size) for item in list_attachments(data)],[('notes.txt',5)])
+        self.assertEqual(attachment_bytes(data,'notes.txt'),b'hello')
+        with self.assertRaisesRegex(ValueError,'بهذا الاسم'):add_attachment(data,'NOTES.TXT',b'x')
+        result=remove_attachment(data,'notes.txt');self.assertEqual(list_attachments(result),[])
 
     def test_secure_redaction_removes_page_text_objects(self):
         data = text_overlay(300, 400, Overlay("SECRET-123", "center", 24))

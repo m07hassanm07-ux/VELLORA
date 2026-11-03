@@ -134,6 +134,13 @@ class DocumentTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), b"replacement")
             self.assertEqual(list(Path(directory).glob(".waraq-*")), [])
 
+    def test_attachments_survive_document_assembly(self):
+        writer=PdfWriter();writer.add_blank_page(100,100);writer.add_attachment('source.txt',b'kept')
+        stream=BytesIO();writer.write(stream)
+        doc=Document();doc.import_bytes('attached.pdf',stream.getvalue())
+        result=PdfReader(BytesIO(doc.build_bytes()))
+        self.assertEqual(result.attachments['source.txt'],[b'kept'])
+
     def test_form_values_survive_merge_with_colliding_names(self):
         doc = Document()
         doc.import_bytes("a.pdf", form_fixture("Alice"))

@@ -42,6 +42,13 @@ class SignatureInfo:
 FIELD_KINDS = {"text": "/Tx", "checkbox": "/Btn", "choice": "/Ch"}
 
 
+@dataclass(frozen=True)
+class AttachmentInfo:
+    name: str
+    size: int
+    description: str = ""
+
+
 def _reader(data: bytes, password: str = "") -> PdfReader:
     reader = PdfReader(BytesIO(data), strict=False)
     if reader.is_encrypted and not reader.decrypt(password):
@@ -178,6 +185,44 @@ def inspect_signatures(data: bytes, password: str = "") -> list[SignatureInfo]:
             str(value.get("/Location", "")), str(value.get("/M", "")), bool(value.get("/Contents")),
         ))
     return result
+
+
+def list_attachments(data: bytes, password: str = "") -> list[AttachmentInfo]:
+    reader=_reader(data,password);result=[]
+    for embedded in reader.attachment_list:
+        result.append(AttachmentInfo(str(embedded.name),len(embedded.content),str(embedded.description or '')))
+    return sorted(result,key=lambda item:item.name.casefold())
+
+
+def attachment_bytes(data: bytes, name: str, password: str = "") -> bytes:
+    reader=_reader(data,password);matches=[item for item in reader.attachment_list if str(item.name)==name]
+    if len(matches)!=1:raise ValueError('لم يتم العثور على المرفق المطلوب بصورة فريدة.')
+    return bytes(matches[0].content)
+
+
+def add_attachment(data: bytes, name: str, content: bytes, description: str = "") -> bytes:
+    name=Path(name).name.strip()
+    if not name or len(name)>240:raise ValueError('اسم المرفق غير صالح.')
+    if len(content)>100*1024*1024:raise ValueError('حجم المرفق يتجاوز 100 ميجابايت.')
+    reader=_reader(data)
+    if any(str(item.name).casefold()==name.casefold() for item in reader.attachment_list):
+        raise ValueError('يوجد مرفق آخر بهذا الاسم.')
+    writer=PdfWriter();writer.append(reader,import_outline=True)
+    for current in reader.attachment_list:
+        copied=writer.add_attachment(str(current.name),bytes(current.content))
+        copied.description=TextStringObject(str(current.description or ''))
+    embedded=writer.add_attachment(name,content);embedded.description=TextStringObject(description[:500])
+    output=BytesIO();writer.write(output);writer.close();return output.getvalue()
+
+
+def remove_attachment(data: bytes, name: str) -> bytes:
+    reader=_reader(data);writer=PdfWriter();writer.append(reader,import_outline=True);removed=0
+    for current in reader.attachment_list:
+        if str(current.name)==name:removed+=1;continue
+        copied=writer.add_attachment(str(current.name),bytes(current.content))
+        copied.description=TextStringObject(str(current.description or ''))
+    if removed!=1:raise ValueError('لم يتم العثور على المرفق المطلوب بصورة فريدة.')
+    output=BytesIO();writer.write(output);writer.close();return output.getvalue()
 
 
 def extract_text(data: bytes, password: str = "", page_break: str = "\n\f\n") -> str:

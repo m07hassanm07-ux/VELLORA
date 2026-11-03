@@ -16,6 +16,7 @@ import uuid
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.constants import UserAccessPermissions
+from pypdf.generic import TextStringObject
 from . import __version__
 
 
@@ -291,6 +292,18 @@ class Document:
                     effective = replace(overlay, text=f"{number} / {total}") if overlay.numbering else overlay
                     layer = PdfReader(BytesIO(overlay_renderer(float(page.cropbox.width), float(page.cropbox.height), effective)))
                     page.merge_translated_page(layer.pages[0], float(page.cropbox.left), float(page.cropbox.bottom), expand=False)
+        # Page-by-page assembly does not copy document-level embedded files.
+        # Preserve them explicitly and disambiguate equal names from merged inputs.
+        used_attachment_names=set()
+        for source_id in sorted(selected_source_ids):
+            reader=export_readers[source_id]
+            for embedded in reader.attachment_list:
+                original=str(embedded.name);name=original;counter=2
+                while name.casefold() in used_attachment_names:
+                    stem=Path(original).stem;suffix=Path(original).suffix;name=f'{stem}-{counter}{suffix}';counter+=1
+                used_attachment_names.add(name.casefold())
+                copied=writer.add_attachment(name,bytes(embedded.content))
+                copied.description=TextStringObject(str(embedded.description or ''))
         # PDF 1.7 is broadly supported by desktop viewers and current browsers.
         # This is a compatibility target, not a claim of PDF/A or PDF/UA conformance.
         header = writer.pdf_header

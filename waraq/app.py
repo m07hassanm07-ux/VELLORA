@@ -31,7 +31,8 @@ from .merge_dialog import MergeDialog
 from .conversion import convert_file, web_to_pdf, export_pdf_office, SUPPORTED_TYPES, ConversionCancelled
 from .editor_dialog import PageEditorDialog
 from .templates import encode_template, decode_template, builtin_template
-from .professional import (add_form_field, export_page_images, extract_text, fill_form_fields,
+from .professional import (add_attachment, attachment_bytes, list_attachments, remove_attachment,
+                           add_form_field, export_page_images, extract_text, fill_form_fields,
                            inspect_signatures, list_form_fields, secure_redact_page)
 from .reading import PageImage, SearchDock, OcrDialog, ReviewDock
 from .textlayout import Glyph, character_map, find_matches, normal_text, select_region
@@ -563,6 +564,9 @@ class MainWindow(QMainWindow):
             (tools, 'exporttext', 'تصدير النص…', '', self.export_text_file),
             (tools, 'exportimages', 'تصدير الصفحات كصور…', '', self.export_page_images_dialog),
             (tools, 'exportoffice', 'تصدير إلى Word / Excel / PowerPoint…', '', self.export_office_dialog),
+            (tools, 'addattachment', 'إضافة مرفق إلى PDF…', '', self.add_pdf_attachment),
+            (tools, 'extractattachment', 'استخراج مرفق…', '', self.extract_pdf_attachment),
+            (tools, 'removeattachment', 'حذف مرفق…', '', self.remove_pdf_attachment),
             (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
@@ -1462,6 +1466,48 @@ class MainWindow(QMainWindow):
                 return export_pdf_office(data,path,kind,lambda:(report(0,0,'جاري التصدير بواسطة Microsoft Office…') and not cancelled()))
             result=run_task(self,'تصدير إلى '+label,operation)
             self.statusBar().showMessage(f'تم التصدير: {result}',15000)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def choose_attachment(self,title):
+        data=self.assembled_bytes('قراءة مرفقات المستند');items=list_attachments(data)
+        if not items:
+            QMessageBox.information(self,'مرفقات PDF','لا يحتوي المستند على مرفقات.');return data,None
+        labels=[f'{item.name} — {item.size:,} بايت' for item in items]
+        label,ok=QInputDialog.getItem(self,title,'اختر المرفق:',labels,0,False)
+        return data,(items[labels.index(label)].name if ok else None)
+
+    def add_pdf_attachment(self):
+        if not self.document.pages:return
+        path,_=QFileDialog.getOpenFileName(self,'اختيار ملف لإرفاقه')
+        if not path:return
+        try:
+            source=Path(path)
+            result=add_attachment(self.assembled_bytes('إضافة المرفق'),source.name,source.read_bytes())
+            self.document.replace_document(result,'مستند بمرفقات.pdf');self.refresh(self.pages.currentRow())
+            self.statusBar().showMessage(f'تم إرفاق {source.name}. اختر «حفظ نسخة» لحفظ النتيجة.',12000)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def extract_pdf_attachment(self):
+        if not self.document.pages:return
+        try:
+            data,name=self.choose_attachment('استخراج مرفق')
+            if not name:return
+            path,_=QFileDialog.getSaveFileName(self,'حفظ المرفق',str(Path.home()/'Documents'/name))
+            if not path:return
+            atomic_write(path,attachment_bytes(data,name));self.statusBar().showMessage(f'تم استخراج المرفق: {path}',12000)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def remove_pdf_attachment(self):
+        if not self.document.pages:return
+        try:
+            data,name=self.choose_attachment('حذف مرفق')
+            if not name:return
+            if QMessageBox.question(self,'حذف المرفق',f'حذف المرفق «{name}» من النسخة الحالية؟',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+            result=remove_attachment(data,name);self.document.replace_document(result,'مستند بدون المرفق.pdf');self.refresh(self.pages.currentRow())
+            self.statusBar().showMessage('تم حذف المرفق. اختر «حفظ نسخة» لحفظ النتيجة.',12000)
         except JobCancelled:pass
         except Exception as exc:self.error(exc,exc)
 
