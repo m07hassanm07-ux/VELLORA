@@ -300,3 +300,19 @@ def secure_redact_page(data: bytes, page_index: int, rects: list[tuple[float, fl
         writer.add_metadata({str(k): str(v) for k, v in reader.metadata.items() if v is not None})
     output = BytesIO(); writer.write(output); writer.close()
     return output.getvalue()
+
+
+def secure_redact_text(data: bytes, query: str, *, dpi: int = 200, progress=None) -> tuple[bytes, int]:
+    query=query.strip()
+    if not query:raise ValueError('اكتب النص المطلوب تنقيحه.')
+    from .textlayout import find_matches
+    matches=find_matches(data,query,progress=progress)
+    if not matches:raise ValueError('لم يُعثر على النص المطلوب في المستند.')
+    by_page={}
+    for match in matches:by_page.setdefault(match['page'],[]).extend(match['rects'])
+    result=data
+    for offset,(page,rects) in enumerate(sorted(by_page.items())):
+        if progress:progress(offset,len(by_page),f'تنقيح الصفحة {page+1}…')
+        result=secure_redact_page(result,page,rects,dpi=dpi)
+    if progress:progress(len(by_page),len(by_page),'اكتمل التنقيح الآمن')
+    return result,len(matches)

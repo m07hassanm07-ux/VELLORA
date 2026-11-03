@@ -12,7 +12,7 @@ from pypdf.generic import (ArrayObject, DictionaryObject, NameObject,
 from waraq.professional import (add_attachment, attachment_bytes, list_attachments, remove_attachment,
                                 add_form_field, export_page_images, extract_text,
                                 fill_form_fields, inspect_signatures,
-                                list_form_fields, secure_redact_page)
+                                list_form_fields, secure_redact_page, secure_redact_text)
 from waraq.rendering import text_overlay
 from waraq.core import Overlay
 
@@ -86,6 +86,11 @@ class ProfessionalTests(unittest.TestCase):
         result = secure_redact_page(data, 0, [(0, 0, 300, 400)], dpi=72)
         self.assertNotIn("SECRET-123", extract_text(result))
         self.assertEqual(len(PdfReader(BytesIO(result)).pages), 1)
+
+    def test_secure_redaction_by_search(self):
+        data=text_overlay(300,400,Overlay('ACCOUNT-7788','center',24))
+        result,count=secure_redact_text(data,'account-7788',dpi=72)
+        self.assertEqual(count,1);self.assertNotIn('ACCOUNT-7788',extract_text(result))
 
 
 if __name__ == "__main__": unittest.main()

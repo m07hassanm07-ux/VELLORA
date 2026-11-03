@@ -34,7 +34,8 @@ from .editor_dialog import PageEditorDialog
 from .templates import encode_template, decode_template, builtin_template
 from .professional import (add_attachment, attachment_bytes, list_attachments, remove_attachment,
                            add_form_field, export_page_images, extract_text, fill_form_fields,
-                           inspect_signatures, list_form_fields, secure_redact_page)
+                           inspect_signatures, list_form_fields, secure_redact_page, secure_redact_text)
+from .preflight import preflight_pdf, sanitize_pdf
 from .reading import PageImage, SearchDock, OcrDialog, ReviewDock
 from .textlayout import Glyph, character_map, find_matches, normal_text, select_region
 from .ocr import find_tesseract, run_ocr, JobCancelled
@@ -573,6 +574,9 @@ class MainWindow(QMainWindow):
             (tools, 'bookmark', 'إضافة أو تعديل إشارة مرجعية…', 'Ctrl+B', self.edit_bookmark),
             (tools, 'clearbookmark', 'حذف الإشارة المرجعية للصفحة', '', self.clear_bookmark),
             (tools, 'scanner', 'مسح صفحة من الماسح الضوئي…', '', self.scan_page),
+            (tools, 'preflight', 'فحص المستند قبل النشر…', '', self.preflight_document),
+            (tools, 'sanitize', 'تنظيف البيانات الخفية…', '', self.sanitize_document),
+            (tools, 'redactsearch', 'تنقيح نص في جميع الصفحات…', '', self.redact_text_everywhere),
             (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
@@ -1554,6 +1558,46 @@ class MainWindow(QMainWindow):
             self.document.import_bytes('صفحة ممسوحة ضوئيًا.pdf',data);self.refresh(index)
             self.statusBar().showMessage('تمت إضافة الصفحة الممسوحة. يمكنك تشغيل OCR لجعل نصها قابلًا للبحث.',12000)
         except ConversionCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def preflight_document(self):
+        if not self.document.pages:return
+        try:
+            report=preflight_pdf(self.assembled_bytes('فحص المستند قبل النشر'))
+            dialog=QDialog(self);dialog.setWindowTitle('فحص المستند قبل النشر');dialog.resize(650,520)
+            layout=QVBoxLayout(dialog)
+            summary=QLabel(f'PDF {report.version}  •  {report.pages} صفحة  •  {report.fields} حقل نموذج  •  {report.attachments} مرفق')
+            summary.setWordWrap(True);layout.addWidget(summary);items=QListWidget()
+            labels={'warning':'تحذير','info':'معلومة','error':'خطأ'}
+            if report.issues:
+                for issue in report.issues:items.addItem(f'{labels.get(issue.severity,issue.severity)} — {issue.message}')
+            else:items.addItem('لم يكتشف الفحص مشكلات أساسية.')
+            layout.addWidget(items);note=QLabel('هذا فحص بنيوي مساعد، وليس شهادة اعتماد PDF/A أو PDF/UA.');note.setWordWrap(True);layout.addWidget(note)
+            buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Close);buttons.rejected.connect(dialog.reject);buttons.accepted.connect(dialog.accept);layout.addWidget(buttons);dialog.exec()
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def sanitize_document(self):
+        if not self.document.pages:return
+        if QMessageBox.warning(self,'تنظيف البيانات الخفية','سيزيل ورقة البيانات الوصفية والمرفقات وJavaScript وإجراءات الفتح من النسخة الحالية. احتفظ بالأصل. هل تريد المتابعة؟',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+        try:
+            result=sanitize_pdf(self.assembled_bytes('تنظيف البيانات الخفية'))
+            self.document.replace_document(result,'مستند منظف.pdf');self.refresh(self.pages.currentRow())
+            self.statusBar().showMessage('تم تنظيف البيانات الخفية. اختر «حفظ نسخة» لحفظ النتيجة.',12000)
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def redact_text_everywhere(self):
+        if not self.document.pages:return
+        query,ok=QInputDialog.getText(self,'تنقيح نص في جميع الصفحات','النص الحساس المطلوب حذفه نهائيًا:')
+        if not ok or not query.strip():return
+        if QMessageBox.warning(self,'تنقيح دفعي آمن','ستتحول كل صفحة تحتوي النص إلى صورة ثابتة مع حذف مواضع النص نهائيًا. لن تبقى النصوص في تلك الصفحات قابلة للتحرير. هل تريد المتابعة؟',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+        try:
+            data=self.assembled_bytes('تجهيز التنقيح الدفعي')
+            result,count=run_task(self,'تنقيح النص',lambda report,cancelled:secure_redact_text(data,query,dpi=200,progress=report))
+            self.document.replace_document(result,'مستند منقح.pdf');self.refresh(self.pages.currentRow())
+            self.statusBar().showMessage(f'تم تنقيح {count} موضعًا. اختر «حفظ نسخة» لحفظ النتيجة.',15000)
+        except JobCancelled:pass
         except Exception as exc:self.error(exc,exc)
 
     def default_name(self, suffix="edited"):
