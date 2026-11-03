@@ -28,7 +28,8 @@ from .core import Document, Overlay, PasswordRequired, atomic_write, parse_pages
 from .rendering import render_image, text_overlay, ensure_font_support
 from .printing import paint_pdf, requested_pages, PrintCancelled
 from .merge_dialog import MergeDialog
-from .conversion import convert_file, web_to_pdf, export_pdf_office, SUPPORTED_TYPES, ConversionCancelled
+from .conversion import (acquire_wia_image, convert_file, image_bytes_to_pdf,
+                         web_to_pdf, export_pdf_office, SUPPORTED_TYPES, ConversionCancelled)
 from .editor_dialog import PageEditorDialog
 from .templates import encode_template, decode_template, builtin_template
 from .professional import (add_attachment, attachment_bytes, list_attachments, remove_attachment,
@@ -571,6 +572,7 @@ class MainWindow(QMainWindow):
             (tools, 'compare', 'مقارنة مع نسخة أخرى…', 'Ctrl+Alt+C', self.compare_with_pdf),
             (tools, 'bookmark', 'إضافة أو تعديل إشارة مرجعية…', 'Ctrl+B', self.edit_bookmark),
             (tools, 'clearbookmark', 'حذف الإشارة المرجعية للصفحة', '', self.clear_bookmark),
+            (tools, 'scanner', 'مسح صفحة من الماسح الضوئي…', '', self.scan_page),
             (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
@@ -1545,6 +1547,14 @@ class MainWindow(QMainWindow):
         index=self.pages.currentRow()
         if index>=0 and self.document.pages[index].bookmark:
             self.document.set_bookmark(index,'');self.refresh(index);self.statusBar().showMessage('تم حذف الإشارة المرجعية.',8000)
+
+    def scan_page(self):
+        try:
+            image=acquire_wia_image();data=image_bytes_to_pdf(image);index=len(self.document.pages)
+            self.document.import_bytes('صفحة ممسوحة ضوئيًا.pdf',data);self.refresh(index)
+            self.statusBar().showMessage('تمت إضافة الصفحة الممسوحة. يمكنك تشغيل OCR لجعل نصها قابلًا للبحث.',12000)
+        except ConversionCancelled:pass
+        except Exception as exc:self.error(exc,exc)
 
     def default_name(self, suffix="edited"):
         if self.last_output:

@@ -16,7 +16,8 @@ import pypdfium2 as pdfium
 from waraq.core import Document,Overlay
 from waraq.printing import paint_pdf,requested_pages,PrintCancelled
 from waraq.rendering import text_overlay,ensure_font_support,render_image
-from waraq.conversion import image_to_pdf,web_to_pdf,export_pdf_office,table_rows,ConversionError,run_process,ConversionCancelled
+from waraq.conversion import (acquire_wia_image,image_bytes_to_pdf,image_to_pdf,web_to_pdf,
+    export_pdf_office,table_rows,ConversionError,run_process,ConversionCancelled)
 from waraq.merge_dialog import MergeDialog
 
 
@@ -84,6 +85,12 @@ class PrintingAndConversionTests(unittest.TestCase):
             first=Image.new('RGB',(100,100),'red');second=Image.new('RGB',(100,150),'blue')
             first.save(path,save_all=True,append_images=[second])
             self.assertEqual(len(PdfReader(BytesIO(image_to_pdf(path))).pages),2)
+
+    def test_scanned_image_bytes_and_platform_guard(self):
+        image=Image.new('RGB',(80,60),'white');stream=BytesIO();image.save(stream,format='JPEG')
+        self.assertEqual(len(PdfReader(BytesIO(image_bytes_to_pdf(stream.getvalue()))).pages),1)
+        with patch('waraq.conversion.os.name','posix'):
+            with self.assertRaisesRegex(ConversionError,'Windows'):acquire_wia_image()
 
     def test_three_file_merge_order_and_independence(self):
         document=Document()

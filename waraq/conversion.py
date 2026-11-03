@@ -133,8 +133,12 @@ def run_process(args: list[str], workdir: Path, progress: Callable[[], bool] | N
 
 
 def image_to_pdf(path: Path) -> bytes:
+    return image_bytes_to_pdf(path.read_bytes())
+
+
+def image_bytes_to_pdf(data: bytes) -> bytes:
     frames=[]
-    with Image.open(path) as image:
+    with Image.open(BytesIO(data)) as image:
         for frame in ImageSequence.Iterator(image):
             current=ImageOps.exif_transpose(frame).convert('RGBA')
             background=Image.new('RGB',current.size,'white')
@@ -145,6 +149,31 @@ def image_to_pdf(path: Path) -> bytes:
     frames[0].save(output,format='PDF',save_all=True,append_images=frames[1:],resolution=150)
     for frame in frames:frame.close()
     return output.getvalue()
+
+
+def acquire_wia_image() -> bytes:
+    """Acquire one image using Windows' standard WIA scanner dialog."""
+    if os.name!='nt':raise ConversionError('المسح المباشر متاح على Windows فقط.')
+    try:
+        import pythoncom
+        from win32com.client import Dispatch
+        pythoncom.CoInitialize()
+        dialog=Dispatch('WIA.CommonDialog')
+        # ScannerDeviceType=1, UnspecifiedIntent=0, JPEG format. Windows owns
+        # the device-selection/progress UI and returns None when cancelled.
+        image=dialog.ShowAcquireImage(1,0,0,'{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}',True,True,False)
+        if image is None:raise ConversionCancelled('أُلغي المسح الضوئي.')
+        value=image.FileData.BinaryData
+        try:data=bytes(value)
+        except ValueError:data=bytes((int(item)&255) for item in value)
+        if len(data)<32:raise ConversionError('لم يُرجع الماسح صورة صالحة.')
+        return data
+    except ConversionCancelled:raise
+    except Exception as exc:raise ConversionError(f'تعذر الاتصال بالماسح عبر WIA: {exc}') from exc
+    finally:
+        try:
+            import pythoncom;pythoncom.CoUninitialize()
+        except Exception:pass
 
 
 def web_to_pdf(url: str, progress: Callable[[],bool] | None=None, *, local_file=False) -> bytes:
