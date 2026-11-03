@@ -28,7 +28,7 @@ from .core import Document, Overlay, PasswordRequired, atomic_write, parse_pages
 from .rendering import render_image, text_overlay, ensure_font_support
 from .printing import paint_pdf, requested_pages, PrintCancelled
 from .merge_dialog import MergeDialog
-from .conversion import convert_file, web_to_pdf, SUPPORTED_TYPES, ConversionCancelled
+from .conversion import convert_file, web_to_pdf, export_pdf_office, SUPPORTED_TYPES, ConversionCancelled
 from .editor_dialog import PageEditorDialog
 from .templates import encode_template, decode_template, builtin_template
 from .professional import (add_form_field, export_page_images, extract_text, fill_form_fields,
@@ -562,6 +562,7 @@ class MainWindow(QMainWindow):
             (tools, 'visualsignature', 'إضافة توقيع مرئي…', '', self.begin_visual_signature),
             (tools, 'exporttext', 'تصدير النص…', '', self.export_text_file),
             (tools, 'exportimages', 'تصدير الصفحات كصور…', '', self.export_page_images_dialog),
+            (tools, 'exportoffice', 'تصدير إلى Word / Excel / PowerPoint…', '', self.export_office_dialog),
             (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
@@ -1443,6 +1444,24 @@ class MainWindow(QMainWindow):
         try:
             paths=export_page_images(self.assembled_bytes('تجهيز صور الصفحات'),folder,dpi=dpi)
             QMessageBox.information(self,'اكتمل التصدير',f'تم إنشاء {len(paths)} صورة PNG في:\n{folder}')
+        except JobCancelled:pass
+        except Exception as exc:self.error(exc,exc)
+
+    def export_office_dialog(self):
+        if not self.document.pages:return
+        labels=['Word (.docx)','Excel (.xlsx)','PowerPoint (.pptx)'];kinds=['docx','xlsx','pptx']
+        label,ok=QInputDialog.getItem(self,'تصدير إلى Office','اختر صيغة التصدير:',labels,0,False)
+        if not ok:return
+        kind=kinds[labels.index(label)];suffix='.'+kind
+        path,_=QFileDialog.getSaveFileName(self,'حفظ ملف Office',str(Path(self.default_name('export')).with_suffix(suffix)),f'{label} (*{suffix})')
+        if not path:return
+        if not path.lower().endswith(suffix):path+=suffix
+        try:
+            data=self.assembled_bytes('تجهيز المستند للتصدير')
+            def operation(report,cancelled):
+                return export_pdf_office(data,path,kind,lambda:(report(0,0,'جاري التصدير بواسطة Microsoft Office…') and not cancelled()))
+            result=run_task(self,'تصدير إلى '+label,operation)
+            self.statusBar().showMessage(f'تم التصدير: {result}',15000)
         except JobCancelled:pass
         except Exception as exc:self.error(exc,exc)
 

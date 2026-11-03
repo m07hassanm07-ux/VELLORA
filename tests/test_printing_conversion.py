@@ -16,7 +16,7 @@ import pypdfium2 as pdfium
 from waraq.core import Document,Overlay
 from waraq.printing import paint_pdf,requested_pages,PrintCancelled
 from waraq.rendering import text_overlay,ensure_font_support,render_image
-from waraq.conversion import image_to_pdf,web_to_pdf,ConversionError,run_process,ConversionCancelled
+from waraq.conversion import image_to_pdf,web_to_pdf,export_pdf_office,table_rows,ConversionError,run_process,ConversionCancelled
 from waraq.merge_dialog import MergeDialog
 
 
@@ -104,6 +104,11 @@ class PrintingAndConversionTests(unittest.TestCase):
     def test_web_url_validation_does_not_launch_browser(self):
         for value in ('javascript:alert(1)','file:///C:/private.pdf','--no-sandbox','example.com'):
             with self.assertRaises(ConversionError):web_to_pdf(value)
+
+    def test_office_export_validation_and_table_rows(self):
+        self.assertEqual(table_rows('Name  Amount\nAli\t10\n\nTotal  10'),[['Name','Amount'],['Ali','10'],['Total','10']])
+        with self.assertRaisesRegex(ConversionError,'غير مدعومة'):
+            export_pdf_office(b'%PDF-invalid','unused.bin','exe')
 
 
 if __name__=='__main__':unittest.main()

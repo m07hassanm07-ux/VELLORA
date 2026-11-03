@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import re
 from urllib.parse import urlparse
 
 from PIL import Image, ImageOps, ImageSequence
@@ -56,6 +57,53 @@ def office_available(suffix: str) -> bool:
             with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT,program+'\\CLSID'):return True
         except OSError:pass
     return False
+
+
+def office_export_available(kind: str) -> bool:
+    if os.name != 'nt':return False
+    import winreg
+    program={'docx':'Word.Application','xlsx':'Excel.Application','pptx':'PowerPoint.Application'}.get(kind)
+    if not program:return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT,program+'\\CLSID'):return True
+    except OSError:return False
+
+
+def table_rows(text: str) -> list[list[str]]:
+    """Conservative plain-text rows used by the local Excel adapter."""
+    rows=[]
+    for line in text.splitlines():
+        line=line.strip()
+        if not line:continue
+        cells=[cell.strip() for cell in re.split(r'\t+| {2,}',line) if cell.strip()]
+        rows.append(cells or [line])
+    return rows
+
+
+def export_pdf_office(data: bytes, destination: str | Path, kind: str,
+                      progress: Callable[[],bool] | None=None) -> Path:
+    """Export through an installed Office application in an isolated process."""
+    kind=kind.lower();destination=Path(destination).resolve()
+    suffix={"docx":".docx","xlsx":".xlsx","pptx":".pptx"}.get(kind)
+    if suffix is None:raise ConversionError('صيغة تصدير Office غير مدعومة.')
+    if not office_export_available(kind):raise ConversionError('يتطلب هذا التصدير تثبيت تطبيق Microsoft Office المناسب على الجهاز.')
+    if destination.suffix.lower()!=suffix:destination=destination.with_suffix(suffix)
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    fd,temporary=tempfile.mkstemp(prefix='.waraq-export-',suffix=suffix,dir=destination.parent);os.close(fd);os.unlink(temporary)
+    temporary=Path(temporary)
+    try:
+        with tempfile.TemporaryDirectory(prefix='waraq-office-export-') as directory:
+            folder=Path(directory);source=folder/'input.pdf';source.write_bytes(data);error=folder/'error.txt'
+            command=[sys.executable] if getattr(sys,'frozen',False) else [sys.executable,str(Path(__file__).resolve().parents[1]/'run.py')]
+            try:run_process(command+['--export-office',str(source),str(temporary),kind,str(error)],folder,progress,timeout=300)
+            except ConversionError as exc:
+                if error.is_file():raise ConversionError(error.read_text(encoding='utf-8')) from exc
+                raise
+        if not temporary.is_file() or temporary.stat().st_size<100:
+            raise ConversionError('لم يُنشئ Office ملف التصدير المتوقع.')
+        os.replace(temporary,destination);return destination
+    finally:
+        if temporary.exists():temporary.unlink()
 
 
 def _read_pdf(path: Path) -> bytes:
@@ -179,4 +227,51 @@ def office_worker(source: str, destination: str) -> int:
         try:
             import pythoncom
             pythoncom.CoUninitialize()
+        except Exception:pass
+
+
+def office_export_worker(source: str, destination: str, kind: str, error_path: str) -> int:
+    """Private COM worker for PDF-to-Office export; never attaches to open apps."""
+    app=document=None
+    try:
+        import pythoncom
+        from win32com.client import DispatchEx
+        pythoncom.CoInitialize();source=str(Path(source).resolve());destination=str(Path(destination).resolve())
+        if kind=='docx':
+            app=DispatchEx('Word.Application');app.Visible=False;app.DisplayAlerts=0;app.AutomationSecurity=3
+            document=app.Documents.Open(source,ConfirmConversions=False,ReadOnly=True,AddToRecentFiles=False,Visible=False)
+            document.SaveAs2(destination,FileFormat=16);document.Close(False);document=None
+        elif kind=='xlsx':
+            app=DispatchEx('Excel.Application');app.Visible=False;app.DisplayAlerts=False;app.AutomationSecurity=3
+            document=app.Workbooks.Add();reader=PdfReader(source)
+            for page_index,page in enumerate(reader.pages):
+                sheet=document.Worksheets(1) if page_index==0 else document.Worksheets.Add(After=document.Worksheets(document.Worksheets.Count))
+                sheet.Name=('صفحة '+str(page_index+1))[:31]
+                for row_index,row in enumerate(table_rows(page.extract_text() or ''),1):
+                    for column_index,value in enumerate(row,1):sheet.Cells(row_index,column_index).Value=value
+                sheet.Columns.AutoFit()
+            document.SaveAs(destination,FileFormat=51);document.Close(False);document=None
+        elif kind=='pptx':
+            from .professional import export_page_images
+            app=DispatchEx('PowerPoint.Application');document=app.Presentations.Add(WithWindow=False)
+            with tempfile.TemporaryDirectory(prefix='waraq-ppt-') as directory:
+                images=export_page_images(Path(source).read_bytes(),directory,dpi=144,prefix='slide')
+                slide_width=float(document.PageSetup.SlideWidth);slide_height=float(document.PageSetup.SlideHeight)
+                for image in images:
+                    slide=document.Slides.Add(document.Slides.Count+1,12)
+                    slide.Shapes.AddPicture(str(image),False,True,0,0,slide_width,slide_height)
+            document.SaveAs(destination,24);document.Close();document=None
+        else:raise ConversionError('صيغة تصدير Office غير مدعومة.')
+        return 0
+    except Exception as exc:
+        Path(error_path).write_text(f'تعذر التصدير إلى Office: {exc}',encoding='utf-8');return 1
+    finally:
+        if document is not None:
+            try:document.Close(False)
+            except Exception:pass
+        if app is not None:
+            try:app.Quit()
+            except Exception:pass
+        try:
+            import pythoncom;pythoncom.CoUninitialize()
         except Exception:pass

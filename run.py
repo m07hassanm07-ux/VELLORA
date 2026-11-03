@@ -12,6 +12,10 @@ if len(sys.argv) == 4 and sys.argv[1] == '--convert-office':
     from waraq.conversion import office_worker
     raise SystemExit(office_worker(sys.argv[2], sys.argv[3]))
 
+if len(sys.argv) == 6 and sys.argv[1] == '--export-office':
+    from waraq.conversion import office_export_worker
+    raise SystemExit(office_export_worker(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]))
+
 if len(sys.argv) == 3 and sys.argv[1] == '--job':
     from waraq.worker import run_job
     raise SystemExit(run_job(sys.argv[2]))
