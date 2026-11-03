@@ -141,6 +141,15 @@ class DocumentTests(unittest.TestCase):
         result=PdfReader(BytesIO(doc.build_bytes()))
         self.assertEqual(result.attachments['source.txt'],[b'kept'])
 
+    def test_bookmarks_are_imported_edited_and_exported(self):
+        writer=PdfWriter();writer.add_blank_page(100,100);writer.add_blank_page(100,100);writer.add_outline_item('Original',0)
+        stream=BytesIO();writer.write(stream)
+        doc=Document();doc.import_bytes('bookmarked.pdf',stream.getvalue())
+        self.assertEqual(doc.pages[0].bookmark,'Original')
+        doc.set_bookmark(1,'  القسم   الثاني  ')
+        result=PdfReader(BytesIO(doc.build_bytes()))
+        self.assertEqual([item.title for item in result.outline if not isinstance(item,list)],['Original','القسم الثاني'])
+
     def test_form_values_survive_merge_with_colliding_names(self):
         doc = Document()
         doc.import_bytes("a.pdf", form_fixture("Alice"))

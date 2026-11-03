@@ -41,6 +41,7 @@ class PageRef:
     rotation: int = 0
     overlays: tuple[Overlay, ...] = ()
     uid: str = field(default_factory=lambda: uuid.uuid4().hex)
+    bookmark: str = ""
 
 
 @dataclass
@@ -165,7 +166,17 @@ class Document:
         source_id = uuid.uuid4().hex
         self.checkpoint()
         self.sources[source_id] = Source(name, data, reader, password, path)
-        self.pages.extend(PageRef(source_id, index) for index in range(count))
+        bookmarks={}
+        def collect(items):
+            for item in items or []:
+                if isinstance(item,list):collect(item);continue
+                try:
+                    page_number=reader.get_destination_page_number(item)
+                    if page_number>=0 and page_number not in bookmarks:bookmarks[page_number]=str(getattr(item,'title','')).strip()[:500]
+                except Exception:pass
+        try:collect(reader.outline)
+        except Exception:pass
+        self.pages.extend(PageRef(source_id, index, bookmark=bookmarks.get(index,'')) for index in range(count))
         if len(self.pages) == count:
             for key in ("/Title", "/Author", "/Subject", "/Keywords"):
                 value = (reader.metadata or {}).get(key)
@@ -199,7 +210,7 @@ class Document:
         source = Source(original.name, data, reader, password, original.path)
         self.checkpoint()
         self.sources[source_id] = source
-        self.pages[index] = PageRef(source_id, 0, uid=reference.uid)
+        self.pages[index] = PageRef(source_id, 0, uid=reference.uid,bookmark=reference.bookmark)
 
     def replace_document(self, data: bytes, name='مستند معالج.pdf') -> None:
         """Apply a multi-page transformation as one undoable transaction."""
@@ -214,7 +225,7 @@ class Document:
             stream=BytesIO(); writer.write(stream); writer.close(); data=stream.getvalue()
             reader=PdfReader(BytesIO(data)); reader.decrypt(password)
         sid=uuid.uuid4().hex; source=Source(name,data,reader,password)
-        pages=[PageRef(sid,i,uid=p.uid) for i,p in enumerate(self.pages)]
+        pages=[PageRef(sid,i,uid=p.uid,bookmark=p.bookmark) for i,p in enumerate(self.pages)]
         self.checkpoint(); self.sources[sid]=source; self.pages=pages
 
     def remove(self, indexes: list[int]) -> None:
@@ -256,6 +267,11 @@ class Document:
     def set_metadata(self, title: str, author: str) -> None:
         self.checkpoint()
         self.metadata.update({"/Title": title, "/Author": author})
+
+    def set_bookmark(self,index: int,title: str) -> None:
+        if not 0<=index<len(self.pages):raise ValueError('رقم الصفحة غير صالح.')
+        title=' '.join(title.split())[:500]
+        self.checkpoint();self.pages[index]=replace(self.pages[index],bookmark=title)
 
     def build_bytes(self, indexes: list[int] | None = None, password: str = "", owner_password: str = "",
                     permissions: int | None = None, overlay_renderer: OverlayRenderer | None = None,
@@ -304,6 +320,9 @@ class Document:
                 used_attachment_names.add(name.casefold())
                 copied=writer.add_attachment(name,bytes(embedded.content))
                 copied.description=TextStringObject(str(embedded.description or ''))
+        for output_index,index in enumerate(indexes):
+            title=self.pages[index].bookmark.strip()
+            if title:writer.add_outline_item(title,output_index)
         # PDF 1.7 is broadly supported by desktop viewers and current browsers.
         # This is a compatibility target, not a claim of PDF/A or PDF/UA conformance.
         header = writer.pdf_header

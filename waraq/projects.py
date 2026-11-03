@@ -40,7 +40,7 @@ def restore(state):
         model.sources[sid]=Source(entry['name'],data,reader,password,Path(entry['path']) if entry.get('path') else None)
     def page(value):
         p=PageRef(value['source'],int(value['index']),int(value.get('rotation',0)),
-            tuple(Overlay(**o) for o in value.get('overlays',[])),value['uid'])
+            tuple(Overlay(**o) for o in value.get('overlays',[])),value['uid'],str(value.get('bookmark','')))
         if p.source not in model.sources or not 0<=p.index<len(model.sources[p.source].reader.pages) or p.rotation not in (0,90,180,270):
             raise ValueError('مرجع صفحة غير صالح داخل المشروع.')
         return p
@@ -55,7 +55,7 @@ def restore(state):
     # only equality is needed, never dereference those page sources.
     saved=state.get('saved')
     if saved:
-        saved_pages=tuple(PageRef(p['source'],int(p['index']),int(p.get('rotation',0)),tuple(Overlay(**o) for o in p.get('overlays',[])),p['uid']) for p in saved['pages'])
+        saved_pages=tuple(PageRef(p['source'],int(p['index']),int(p.get('rotation',0)),tuple(Overlay(**o) for o in p.get('overlays',[])),p['uid'],str(p.get('bookmark',''))) for p in saved['pages'])
         model._saved=(saved_pages,tuple(sorted(saved['metadata'].items())))
     else:model.mark_saved()
     return model

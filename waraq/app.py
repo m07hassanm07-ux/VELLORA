@@ -569,6 +569,8 @@ class MainWindow(QMainWindow):
             (tools, 'extractattachment', 'استخراج مرفق…', '', self.extract_pdf_attachment),
             (tools, 'removeattachment', 'حذف مرفق…', '', self.remove_pdf_attachment),
             (tools, 'compare', 'مقارنة مع نسخة أخرى…', 'Ctrl+Alt+C', self.compare_with_pdf),
+            (tools, 'bookmark', 'إضافة أو تعديل إشارة مرجعية…', 'Ctrl+B', self.edit_bookmark),
+            (tools, 'clearbookmark', 'حذف الإشارة المرجعية للصفحة', '', self.clear_bookmark),
             (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
@@ -859,7 +861,8 @@ class MainWindow(QMainWindow):
         self.pages.clear()
         for index, page in enumerate(self.document.pages):
             name = self.document.sources[page.source].name
-            item = QListWidgetItem(f"صفحة {index + 1}\n{name[:25]}")
+            bookmark=f"  ★ {page.bookmark[:20]}" if page.bookmark else ''
+            item = QListWidgetItem(f"صفحة {index + 1}{bookmark}\n{name[:25]}")
             item.setData(Qt.ItemDataRole.UserRole, page.uid)
             item.setSizeHint(QSize(200, 225))
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1529,6 +1532,19 @@ class MainWindow(QMainWindow):
             layout.addWidget(items);buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Close);buttons.rejected.connect(dialog.reject);buttons.accepted.connect(dialog.accept);layout.addWidget(buttons);dialog.exec()
         except JobCancelled:pass
         except Exception as exc:self.error(exc,exc)
+
+    def edit_bookmark(self):
+        index=self.pages.currentRow()
+        if index<0:return
+        current=self.document.pages[index].bookmark
+        title,ok=QInputDialog.getText(self,'إشارة مرجعية',f'عنوان الإشارة للصفحة {index+1}:',text=current)
+        if ok and title.strip():
+            self.document.set_bookmark(index,title);self.refresh(index);self.statusBar().showMessage('تم تحديث الإشارة المرجعية.',8000)
+
+    def clear_bookmark(self):
+        index=self.pages.currentRow()
+        if index>=0 and self.document.pages[index].bookmark:
+            self.document.set_bookmark(index,'');self.refresh(index);self.statusBar().showMessage('تم حذف الإشارة المرجعية.',8000)
 
     def default_name(self, suffix="edited"):
         if self.last_output:
