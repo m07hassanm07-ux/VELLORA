@@ -31,7 +31,7 @@ def run_job(directory):
             result['matches']=find_matches(data,params['query'],progress=progress);data=None
         elif kind=='ocr':
             data=model.build_bytes(overlay_renderer=text_overlay,progress=progress)
-            data,result['report']=run_ocr(data,params.get('indexes'),params.get('language','ara+eng'),params.get('engine'),params.get('skip_text',True),progress)
+            data,result['report']=run_ocr(data,params.get('indexes'),params.get('language','ara+eng'),params.get('engine'),params.get('skip_text',True),progress,params.get('preprocess',True))
         elif kind=='import':
             from .conversion import convert_file
             path=Path(params['path']);password=params.get('password','')

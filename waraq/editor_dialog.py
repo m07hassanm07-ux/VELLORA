@@ -6,10 +6,10 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QImageReader, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout,
-    QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QInputDialog,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QVBoxLayout, QWidget)
 
-from .editing import edit_page, inspect_page, prepare_page
+from .editing import edit_page, inspect_page, prepare_page, insert_table
 from .rendering import render_image, ensure_font_support
 from .textlayout import group_text
 from .fonts import install_font
@@ -141,7 +141,7 @@ class PageEditorDialog(QDialog):
         self.initial_data = self.data
         self.history, self.future = [], []
         self.mode = 'select'
-        self.image = None
+        self.image = None; self.table_rows = None
         self.loading = False
         self.draft = None
         self.pending = False
@@ -149,7 +149,7 @@ class PageEditorDialog(QDialog):
         note = QLabel('حرّر النص والصور مباشرة داخل الصفحة؛ انقر العنصر أو اسحب حوله ثم استخدم لوحة الخصائص.')
         note.setWordWrap(True); layout.addWidget(note)
         toolbar = QHBoxLayout()
-        for label, callback in [('تحديد عنصر', self.select_mode), ('نص جديد', self.new_text), ('إضافة صورة…', self.choose_image)]:
+        for label, callback in [('تحديد عنصر', self.select_mode), ('نص جديد', self.new_text), ('إضافة صورة…', self.choose_image), ('إدراج جدول…', self.new_table)]:
             button = QPushButton(label); button.clicked.connect(callback); toolbar.addWidget(button)
         self.undo_button = QPushButton('تراجع'); self.undo_button.clicked.connect(self.undo); toolbar.addWidget(self.undo_button)
         self.redo_button = QPushButton('إعادة'); self.redo_button.clicked.connect(self.redo); toolbar.addWidget(self.redo_button)
@@ -315,7 +315,7 @@ class PageEditorDialog(QDialog):
 
     def pick_region(self, rect):
         self.clear_draft()
-        if self.mode in ('text', 'image'):
+        if self.mode in ('text', 'image', 'table'):
             if rect.width() < 3 or rect.height() < 3:
                 current = self.rect(); current.moveTopLeft(rect.topLeft())
                 rect = current.intersected(QRectF(0, 0, self.width, self.height))
@@ -357,7 +357,19 @@ class PageEditorDialog(QDialog):
         self.set_rect(QRectF(self.width*.1, self.height*.1, self.width*.4, self.height*.3))
         self.status.setText(f'الصورة: {Path(path).name}. ارسم مكانها ثم عاين التعديل؛ ستُحفظ نسبة أبعادها.')
 
+    def new_table(self):
+        raw,ok=QInputDialog.getMultiLineText(self,'إدراج أو تحرير جدول','اكتب صفوف الجدول؛ افصل الخلايا بزر Tab. يمكنك إضافة الأسطر أو حذفها وإعادة ترتيبها:','العنوان 1\tالعنوان 2\nقيمة 1\tقيمة 2')
+        if not ok:return
+        rows=[[cell.strip() for cell in line.split('\t')] for line in raw.splitlines() if line.strip()]
+        if not rows:QMessageBox.warning(self,'الجدول','أضف صفًا واحدًا على الأقل.');return
+        self.clear_draft();self.objects.clearSelection();self.mode='table';self.image=None;self.table_rows=rows
+        self.set_rect(QRectF(self.width*.1,self.height*.15,self.width*.8,min(self.height*.6,max(80,len(rows)*35))))
+        self.status.setText('اسحب لتحديد مساحة الجدول ثم عاينه. النص والخطوط ستبقى عناصر متجهة داخل PDF.')
+
     def make_change(self):
+        if self.mode=='table':
+            rect=self.rect();return insert_table(self.data,(rect.x(),rect.y(),rect.width(),rect.height()),self.table_rows,
+                family=self.font.currentFont().family(),size=self.size.value(),rtl=True)
         indexes = self.selected_indexes() if self.mode == 'select' else []
         if self.mode == 'select' and not indexes:
             raise ValueError('حدد نصًا لتعديله، أو اختر «نص جديد» أو «إضافة صورة».')

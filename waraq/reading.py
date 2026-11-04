@@ -100,6 +100,7 @@ class OcrDialog(QDialog):
         row=QHBoxLayout();self.engine=QLineEdit(str(engine) if engine else '');row.addWidget(self.engine)
         browse=QPushButton('اختيار…');row.addWidget(browse);browse.clicked.connect(self.choose_engine);form.addRow('محرك Tesseract',row)
         layout.addLayout(form);self.skip=QCheckBox('تخطي الصفحات التي تحتوي نصًا بالفعل');self.skip.setChecked(True);layout.addWidget(self.skip)
+        self.preprocess=QCheckBox('تحسين المسح تلقائيًا: إزالة ضوضاء ورفع التباين');self.preprocess.setChecked(True);layout.addWidget(self.preprocess)
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText('بدء التعرف');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
         buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)

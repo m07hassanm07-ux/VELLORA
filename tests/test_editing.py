@@ -11,7 +11,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from waraq.core import Document
-from waraq.editing import prepare_page, inspect_page, edit_page
+from waraq.editing import prepare_page, inspect_page, edit_page, insert_table
 from waraq.editor_dialog import PageEditorDialog
 from waraq.rendering import ensure_font_support, render_image
 
@@ -91,6 +91,12 @@ class PageEditingTests(unittest.TestCase):
                           rect=(40,60,220,55),size=22,auto_fit=True)
         extracted=' '.join(PdfReader(BytesIO(changed)).pages[0].extract_text().split())
         self.assertIn('longer replacement paragraph',extracted)
+
+    def test_vector_table_insertion_preserves_cells(self):
+        source=prepare_page(text_fixture())
+        changed=insert_table(source,(40,200,420,120),[['Name','Amount'],['Ali','10']],header=True)
+        text=' '.join(PdfReader(BytesIO(changed)).pages[0].extract_text().split())
+        self.assertIn('Name',text);self.assertIn('Amount',text);self.assertIn('Ali',text)
         self.assertIn('OLD TEXT', PdfReader(BytesIO(source)).pages[0].extract_text())
 
     def test_cropped_rotated_page_normalizes_without_visual_change(self):

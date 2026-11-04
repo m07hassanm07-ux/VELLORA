@@ -41,7 +41,7 @@ def engine_languages(engine):
     return set(line.strip() for line in result.stdout.splitlines()[1:] if line.strip())
 
 
-def run_ocr(data, indexes=None, language='ara+eng', engine=None, skip_text=True, progress=None):
+def run_ocr(data, indexes=None, language='ara+eng', engine=None, skip_text=True, progress=None, preprocess=True):
     engine = find_tesseract(engine)
     if not engine:
         raise OcrError('ثبّت Tesseract OCR مع بيانات العربية ara والإنجليزية eng، أو اختر محركه من إعدادات OCR.')
@@ -73,7 +73,13 @@ def run_ocr(data, indexes=None, language='ara+eng', engine=None, skip_text=True,
                     width, height = source.get_size()
                     scale = min(300/72, (30_000_000/max(1, width*height))**.5)
                     bitmap = source.render(scale=scale)
-                    try: bitmap.to_pil().convert('RGB').save(folder/'scan.png', dpi=(scale*72, scale*72))
+                    try:
+                        image=bitmap.to_pil().convert('L')
+                        if preprocess:
+                            from PIL import ImageEnhance,ImageFilter,ImageOps
+                            image=ImageOps.autocontrast(image,cutoff=1).filter(ImageFilter.MedianFilter(3))
+                            image=ImageEnhance.Contrast(image).enhance(1.25)
+                        image.convert('RGB').save(folder/'scan.png',dpi=(scale*72,scale*72))
                     finally: bitmap.close()
                 finally: source.close()
             args = [str(engine), str(folder/'scan.png'), str(folder/'result'), '-l', language,
@@ -107,4 +113,4 @@ def run_ocr(data, indexes=None, language='ara+eng', engine=None, skip_text=True,
             done += 1; tick(f'اكتملت الصفحة {index+1}')
     writer.add_metadata(dict(reader.metadata or {})); writer.pdf_header = max(writer.pdf_header, '%PDF-1.7')
     output = BytesIO(); writer.write(output); writer.close()
-    return output.getvalue(), {'recognized': recognized, 'skipped': skipped, 'language': language}
+    return output.getvalue(), {'recognized': recognized, 'skipped': skipped, 'language': language, 'preprocessed':preprocess}

@@ -276,3 +276,31 @@ def edit_page(data: bytes, indexes=(), *, text=None, image: QImage | None=None, 
     writer.pdf_header = max(writer.pdf_header, '%PDF-1.7')
     stream = BytesIO(); writer.write(stream); writer.close()
     return stream.getvalue()
+
+
+def insert_table(data: bytes, rect, rows: list[list[str]], *, family='Segoe UI', size=10,
+                 header=True, rtl=False) -> bytes:
+    """Insert a vector table from editable row/column data."""
+    if not rows or not any(rows):raise ValueError('أضف خلية واحدة على الأقل للجدول.')
+    columns=max(len(row) for row in rows)
+    if columns<1 or columns>20 or len(rows)>100:raise ValueError('الجدول محدود بمائة صف وعشرين عمودًا.')
+    rows=[list(row)+['']*(columns-len(row)) for row in rows]
+    reader=PdfReader(BytesIO(data));page=reader.pages[0];width,height=float(page.cropbox.width),float(page.cropbox.height)
+    x,y,w,h=map(float,rect)
+    if x<0 or y<0 or w<40 or h<20 or x+w>width+.01 or y+h>height+.01:raise ValueError('ضع الجدول داخل الصفحة وبحجم مناسب.')
+    output=QByteArray();buffer=QBuffer(output);buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    pdf=QPdfWriter(buffer);pdf.setResolution(72);pdf.setPageSize(QPageSize(QSizeF(width,height),QPageSize.Unit.Point));pdf.setPageMargins(QMarginsF(0,0,0,0),QPageLayout.Unit.Point)
+    painter=QPainter(pdf)
+    try:
+        cell_w,cell_h=w/columns,h/len(rows);font=QFont(family);font.setPointSizeF(max(4,min(72,size)))
+        painter.setFont(font);painter.setPen(QColor('#334e5c'))
+        for row_index,row in enumerate(rows):
+            for logical_column,value in enumerate(row):
+                column=columns-1-logical_column if rtl else logical_column
+                cell=QRectF(x+column*cell_w,y+row_index*cell_h,cell_w,cell_h)
+                if header and row_index==0:painter.fillRect(cell,QColor('#dcefe9'))
+                painter.drawRect(cell);align=Qt.AlignmentFlag.AlignVCenter|(Qt.AlignmentFlag.AlignRight if rtl else Qt.AlignmentFlag.AlignLeft)
+                painter.drawText(cell.adjusted(4,2,-4,-2),align,str(value)[:1000])
+    finally:painter.end();del pdf;buffer.close()
+    page.merge_page(PdfReader(BytesIO(bytes(output))).pages[0])
+    writer=PdfWriter();writer.append(reader,import_outline=False);stream=BytesIO();writer.write(stream);writer.close();return stream.getvalue()

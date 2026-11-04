@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QStatusBar,
-    QToolBar, QVBoxLayout, QWidget, QStyledItemDelegate, QStyle, QProgressDialog,
+    QToolBar, QVBoxLayout, QWidget, QStyledItemDelegate, QStyle, QProgressDialog, QDockWidget,
     QTableWidget, QTableWidgetItem, QKeySequenceEdit,
 )
 import pypdfium2 as pdfium
@@ -338,6 +338,8 @@ class MainWindow(QMainWindow):
         self.thumb_queue: list[int] = []
         self.make_ui()
         self.make_menu()
+        self.operation_dock=QDockWidget('مركز العمليات',self);self.operation_list=QListWidget();self.operation_dock.setWidget(self.operation_list)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea,self.operation_dock);self.operation_dock.hide()
         self.apply_theme(self.dark_mode)
         self.search_dock = SearchDock(self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.search_dock); self.search_dock.hide()
@@ -568,6 +570,7 @@ class MainWindow(QMainWindow):
             (files, "create", "إنشاء PDF من ملف…", "", self.create_pdf_dialog),
             (files, "web", "إنشاء PDF من صفحة ويب…", "", self.import_web),
             (files, "save", "حفظ نسخة…", "Ctrl+S", self.save_document),
+            (files, "favorite", "إضافة المستند الحالي إلى المفضلة", "Ctrl+Alt+M", self.toggle_current_favorite),
             (files, "print", "طباعة…", "Ctrl+P", self.print_document),
             (files, "batchprint", "طباعة دفعية لملفات PDF…", "", self.print_batch),
             (files, "printpreview", "معاينة الطباعة…", "Ctrl+Shift+P", self.print_preview),
@@ -589,6 +592,7 @@ class MainWindow(QMainWindow):
             (edits, "cleartext", "إزالة النصوص المضافة من المحدد", "", self.clear_text),
             (view, "fit", "ملاءمة العرض", "Ctrl+0", self.fit_page),
             (view, "zoom", "الحجم الطبيعي", "Ctrl+1", self.actual_size),
+            (view, "operations", "مركز العمليات…", "Ctrl+Alt+J", self.show_operation_center),
             (tools, 'ocr', 'التعرف على النص OCR…', '', self.ocr_document),
             (tools, 'forms', 'تعبئة حقول النموذج…', 'Ctrl+Alt+F', self.fill_pdf_form),
             (tools, 'createform', 'إنشاء حقل نموذج…', '', self.begin_create_form_field),
@@ -627,7 +631,7 @@ class MainWindow(QMainWindow):
         view.addSeparator();dark=QAction('الوضع الداكن',self);dark.setCheckable(True);dark.setChecked(self.dark_mode);dark.triggered.connect(self.toggle_dark_mode);view.addAction(dark);self.actions['dark']=dark
         tools.addSeparator();customize=QAction('تخصيص اختصارات لوحة المفاتيح…',self);customize.triggered.connect(self.customize_shortcuts);tools.addAction(customize)
         self.apply_saved_shortcuts()
-        files.addSeparator();self.recent_menu=files.addMenu('الملفات الحديثة');self.refresh_recent_menu()
+        files.addSeparator();self.favorite_menu=files.addMenu('المفضلة');self.recent_menu=files.addMenu('الملفات الحديثة');self.refresh_favorite_menu();self.refresh_recent_menu()
 
     def apply_saved_shortcuts(self):
         values={key:self.settings.value(f'shortcuts/{key}',default) if self.settings.contains(f'shortcuts/{key}') else default
@@ -648,6 +652,15 @@ class MainWindow(QMainWindow):
     def apply_theme(self,dark):
         QApplication.instance().setStyleSheet(STYLE+(DARK_STYLE if dark else ''))
 
+    def show_operation_center(self):
+        self.operation_dock.show();self.operation_dock.raise_()
+
+    def record_operation(self,label,status):
+        if not hasattr(self,'operation_list'):return
+        from datetime import datetime
+        self.operation_list.insertItem(0,f'{datetime.now().strftime("%H:%M:%S")}  •  {status}  •  {label}')
+        while self.operation_list.count()>100:self.operation_list.takeItem(self.operation_list.count()-1)
+
     def toggle_dark_mode(self,checked):
         self.dark_mode=bool(checked);self.settings.setValue('ui/dark_mode',self.dark_mode);self.apply_theme(self.dark_mode)
 
@@ -655,6 +668,40 @@ class MainWindow(QMainWindow):
         value=self.settings.value('recent/files',[]) or []
         if isinstance(value,str):value=[value]
         return [str(path) for path in value if str(path).strip()][:10]
+
+    def favorite_paths(self):
+        value=self.settings.value('favorites/files',[]) or []
+        if isinstance(value,str):value=[value]
+        return [str(path) for path in value if str(path).strip()][:30]
+
+    def current_file_path(self):
+        if self.last_output and self.last_output.is_file():return str(self.last_output.resolve())
+        if self.document.pages:
+            source=self.document.sources[self.document.pages[0].source]
+            if source.path and Path(source.path).is_file():return str(Path(source.path).resolve())
+        return ''
+
+    def toggle_current_favorite(self):
+        path=self.current_file_path()
+        if not path:self.error('احفظ المستند أولًا أو افتح ملفًا موجودًا لإضافته إلى المفضلة.');return
+        favorites=self.favorite_paths();match=next((item for item in favorites if item.casefold()==path.casefold()),None)
+        favorites=[item for item in favorites if item.casefold()!=path.casefold()]
+        if match:self.statusBar().showMessage('أزيل المستند من المفضلة.',7000)
+        else:favorites.insert(0,path);self.statusBar().showMessage('أضيف المستند إلى المفضلة.',7000)
+        self.settings.setValue('favorites/files',favorites[:30]);self.refresh_favorite_menu()
+
+    def refresh_favorite_menu(self):
+        if not hasattr(self,'favorite_menu'):return
+        self.favorite_menu.clear();paths=self.favorite_paths()
+        for path in paths:
+            action=self.favorite_menu.addAction(Path(path).name);action.setToolTip(path);action.triggered.connect(lambda checked=False,p=path:self.open_recent(p))
+        if not paths:
+            action=self.favorite_menu.addAction('لا توجد ملفات مفضلة');action.setEnabled(False)
+        else:
+            self.favorite_menu.addSeparator();clear=self.favorite_menu.addAction('مسح المفضلة');clear.triggered.connect(self.clear_favorites)
+
+    def clear_favorites(self):
+        self.settings.remove('favorites/files');self.refresh_favorite_menu()
 
     def remember_recent(self,paths):
         recent=self.recent_paths()
@@ -1255,7 +1302,7 @@ class MainWindow(QMainWindow):
         if engine:settings.setValue('ocr/engine',engine)
         indexes=self.selected() if dialog.scope.currentData() else list(range(len(self.document.pages)))
         try:
-            job=self.document_job('التعرف على النص OCR','ocr',{'indexes':indexes,'language':dialog.language.currentData(),'engine':engine,'skip_text':dialog.skip.isChecked()})
+            job=self.document_job('التعرف على النص OCR','ocr',{'indexes':indexes,'language':dialog.language.currentData(),'engine':engine,'skip_text':dialog.skip.isChecked(),'preprocess':dialog.preprocess.isChecked()})
             result,report=job['data'],job['report']
             if report['recognized']:
                 current=self.pages.currentRow();self.document.replace_document(result,'مستند OCR.pdf');self.refresh(current)

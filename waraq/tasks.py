@@ -55,12 +55,18 @@ class TaskDialog(QDialog):
 
 
 def run_task(parent,label,operation):
+    if hasattr(parent,'record_operation'):parent.record_operation(label,'جارٍ التنفيذ')
     thread=TaskThread(operation,parent);dialog=TaskDialog(label,thread,parent)
     thread.start();dialog.exec();thread.wait()
     value,error,cancelled=thread.value,thread.error,thread.was_cancelled
     dialog.deleteLater();thread.deleteLater()
-    if error:raise ValueError(error)
-    if cancelled:raise JobCancelled('تم إلغاء العملية؛ لم تُطبّق نتيجة جزئية.')
+    if error:
+        if hasattr(parent,'record_operation'):parent.record_operation(label,'فشل')
+        raise ValueError(error)
+    if cancelled:
+        if hasattr(parent,'record_operation'):parent.record_operation(label,'أُلغي')
+        raise JobCancelled('تم إلغاء العملية؛ لم تُطبّق نتيجة جزئية.')
+    if hasattr(parent,'record_operation'):parent.record_operation(label,'اكتمل')
     return value
 
 
