@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QStatusBar,
     QToolBar, QVBoxLayout, QWidget, QStyledItemDelegate, QStyle, QProgressDialog,
+    QTableWidget, QTableWidgetItem, QKeySequenceEdit,
 )
 import pypdfium2 as pdfium
 from pypdf import PdfWriter
@@ -44,6 +45,7 @@ from .tasks import TaskThread,run_task,process_job
 from .render_service import ProcessRenderer
 from .compare import compare_pdfs
 from .signatures import sign_pkcs12,validate_signatures
+from .shortcuts import validate_shortcut_map
 
 
 STYLE = """
@@ -275,6 +277,31 @@ class PrintOptionsDialog(QDialog):
         buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
 
 
+class ShortcutDialog(QDialog):
+    def __init__(self, window):
+        super().__init__(window);self.window=window;self.setWindowTitle('تخصيص اختصارات لوحة المفاتيح');self.resize(650,560)
+        layout=QVBoxLayout(self);layout.addWidget(QLabel('انقر خانة الاختصار ثم اضغط التركيبة المطلوبة. اتركها فارغة لتعطيل الاختصار.'))
+        self.table=QTableWidget(len(window.default_shortcuts),2);self.table.setHorizontalHeaderLabels(['الأمر','الاختصار']);self.edits={}
+        for row,key in enumerate(window.default_shortcuts):
+            title=QTableWidgetItem(window.actions[key].text().replace('&',''));title.setFlags(title.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            edit=QKeySequenceEdit(window.actions[key].shortcut());self.table.setItem(row,0,title);self.table.setCellWidget(row,1,edit);self.edits[key]=edit
+        self.table.horizontalHeader().setStretchLastSection(True);layout.addWidget(self.table)
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Save|QDialogButtonBox.StandardButton.RestoreDefaults|QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText('حفظ الاختصارات')
+        buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).setText('استعادة الافتراضي')
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
+        buttons.accepted.connect(self.save);buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(self.restore_defaults);layout.addWidget(buttons)
+
+    def restore_defaults(self):
+        for key,value in self.window.default_shortcuts.items():self.edits[key].setKeySequence(QKeySequence(value))
+
+    def save(self):
+        try:self.window.apply_shortcut_map({key:edit.keySequence() for key,edit in self.edits.items()},persist=True)
+        except ValueError as exc:QMessageBox.warning(self,'تعارض الاختصارات',str(exc));return
+        self.accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -301,6 +328,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(self.brand_icon())
         self.buttons = {}
         self.actions = {}
+        self.default_shortcuts = {}
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
         self.preview_timer.timeout.connect(self.render_current)
@@ -590,13 +618,32 @@ class MainWindow(QMainWindow):
             (help_menu, "about", "عن ورقة…", "", self.about),
         ]:
             action = QAction(title, self)
+            self.default_shortcuts[key]=shortcut
             if shortcut:
                 action.setShortcut(QKeySequence(shortcut))
             action.triggered.connect(handler)
             parent.addAction(action)
             self.actions[key] = action
         view.addSeparator();dark=QAction('الوضع الداكن',self);dark.setCheckable(True);dark.setChecked(self.dark_mode);dark.triggered.connect(self.toggle_dark_mode);view.addAction(dark);self.actions['dark']=dark
+        tools.addSeparator();customize=QAction('تخصيص اختصارات لوحة المفاتيح…',self);customize.triggered.connect(self.customize_shortcuts);tools.addAction(customize)
+        self.apply_saved_shortcuts()
         files.addSeparator();self.recent_menu=files.addMenu('الملفات الحديثة');self.refresh_recent_menu()
+
+    def apply_saved_shortcuts(self):
+        values={key:self.settings.value(f'shortcuts/{key}',default) if self.settings.contains(f'shortcuts/{key}') else default
+                for key,default in self.default_shortcuts.items()}
+        self.apply_shortcut_map(values,persist=False)
+
+    def apply_shortcut_map(self,values,persist=False):
+        complete={key:values.get(key,self.actions[key].shortcut()) for key in self.default_shortcuts}
+        normalized=validate_shortcut_map(complete)
+        for key,shortcut in normalized.items():
+            self.actions[key].setShortcut(QKeySequence(shortcut))
+            if persist:self.settings.setValue(f'shortcuts/{key}',shortcut)
+        if persist:self.settings.sync()
+
+    def customize_shortcuts(self):
+        ShortcutDialog(self).exec()
 
     def apply_theme(self,dark):
         QApplication.instance().setStyleSheet(STYLE+(DARK_STYLE if dark else ''))
