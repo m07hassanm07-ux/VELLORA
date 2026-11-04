@@ -42,6 +42,6 @@ outputs=[source,binary,distribution/'Waraqa.exe']+([setup] if setup.is_file() el
 checksums={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in outputs}
 (release/'SHA256SUMS.txt').write_text(''.join(f'{digest}  {name}\n' for name,digest in checksums.items()),encoding='utf-8')
 tests=json.loads((root/'docs'/'test-results.json').read_text(encoding='utf-8'))
-info={'application':'ورقة','version':version,'build_date_local':date.today().isoformat(),'platform':platform.platform(),'python':platform.python_version(),'license_for_original_code':'MIT','tests_passed':tests['tests_run'] if tests['passed'] else 0,'archives':{p.name:p.stat().st_size for p in (source,binary)},'sha256':checksums,'native_packaged_check':'See native-check.txt in this directory.'}
+info={'application':'ورقة','version':version,'build_date_local':date.today().isoformat(),'platform':platform.platform(),'python':platform.python_version(),'license_for_original_code':'MIT','tests_passed':tests['tests_run'] if tests['passed'] else 0,'archives':{p.name:p.stat().st_size for p in (source,binary)},'sha256':checksums,'native_packaged_check':'See native-check.json and installer-results.json in this directory.'}
 (release/'build-info.json').write_text(json.dumps(info,indent=2),encoding='utf-8')
 print(json.dumps(info,indent=2))
