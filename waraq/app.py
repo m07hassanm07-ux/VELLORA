@@ -8,6 +8,7 @@ import sys
 import traceback
 import logging
 import os
+import json
 
 from PySide6.QtCore import Qt, QSize, QTimer, Signal, QItemSelectionModel, QRect, QSettings
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPixmap
@@ -613,6 +614,8 @@ class MainWindow(QMainWindow):
             (tools, 'redactsearch', 'تنقيح نص في جميع الصفحات…', '', self.redact_text_everywhere),
             (tools, 'digitalsign', 'توقيع رقمي بشهادة PFX…', '', self.sign_with_certificate),
             (tools, 'verifydigital', 'التحقق من توقيعات ملف…', '', self.verify_signature_file),
+            (tools, 'exportsettings', 'تصدير إعدادات ورقة…', '', self.export_settings),
+            (tools, 'importsettings', 'استيراد إعدادات ورقة…', '', self.import_settings),
             (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
@@ -648,6 +651,26 @@ class MainWindow(QMainWindow):
 
     def customize_shortcuts(self):
         ShortcutDialog(self).exec()
+
+    def export_settings(self):
+        path,_=QFileDialog.getSaveFileName(self,'تصدير إعدادات ورقة','Waraqa-settings.json','JSON (*.json)')
+        if not path:return
+        allowed=('ui/','favorites/','shortcuts/','ocr/')
+        data={key:self.settings.value(key) for key in self.settings.allKeys() if key.startswith(allowed)}
+        Path(path).write_text(json.dumps({'format':'waraqa-settings-1','settings':data},ensure_ascii=False,indent=2),encoding='utf-8')
+        self.statusBar().showMessage('تم تصدير الإعدادات دون مستندات أو كلمات مرور.',10000)
+
+    def import_settings(self):
+        path,_=QFileDialog.getOpenFileName(self,'استيراد إعدادات ورقة','','JSON (*.json)')
+        if not path:return
+        try:
+            payload=json.loads(Path(path).read_text(encoding='utf-8'))
+            if payload.get('format')!='waraqa-settings-1' or not isinstance(payload.get('settings'),dict):raise ValueError('ملف الإعدادات غير صالح.')
+            allowed=('ui/','favorites/','shortcuts/','ocr/')
+            for key,value in payload['settings'].items():
+                if isinstance(key,str) and key.startswith(allowed) and isinstance(value,(str,bool,int,float,list)):self.settings.setValue(key,value)
+            self.settings.sync();self.apply_saved_shortcuts();self.refresh_favorite_menu();self.statusBar().showMessage('تم استيراد الإعدادات. سيُطبّق المظهر بعد إعادة التشغيل.',12000)
+        except Exception as exc:self.error(exc,exc)
 
     def apply_theme(self,dark):
         QApplication.instance().setStyleSheet(STYLE+(DARK_STYLE if dark else ''))
