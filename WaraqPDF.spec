@@ -1,12 +1,18 @@
 from pathlib import Path
-import os
-from PyInstaller.utils.hooks import collect_data_files
+import os, sys
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH)
 datas = [(str(ROOT / name), '.') for name in ('LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md')]
 if (ROOT / 'licenses').exists():
     datas.append((str(ROOT / 'licenses'), 'licenses'))
 datas += collect_data_files('pypdfium2_raw')
+datas += collect_data_files('certifi')
+# The bundled Codex Python runtime hardens ssl.SSLContext with this local deny
+# list.  ssl.py loads it by filename at runtime, so frozen builds must carry it.
+rejected_cas = Path(sys.base_prefix) / 'Lib' / 'codex-rejected-cas.pem'
+if rejected_cas.is_file():
+    datas.append((str(rejected_cas), '.'))
 datas.append((str(ROOT / 'assets' / 'ocr'), 'ocr-data'))
 datas.append((str(ROOT / 'assets' / 'waraqa-icon.png'), '.'))
 
@@ -14,7 +20,8 @@ a = Analysis(
     [str(ROOT / 'run.py')],
     pathex=[str(ROOT), str(ROOT / '.deps'), str(ROOT / '.deps' / 'win32'), str(ROOT / '.deps' / 'win32' / 'lib')],
     binaries=[], datas=datas,
-    hiddenimports=['pypdf._crypt_providers._cryptography', 'pythoncom', 'pywintypes', 'win32timezone'],
+    hiddenimports=['pypdf._crypt_providers._cryptography', 'pythoncom', 'pywintypes', 'win32timezone']
+        + collect_submodules('pyhanko') + collect_submodules('pyhanko_certvalidator'),
     hookspath=[], hooksconfig={}, runtime_hooks=[],
     excludes=['tkinter', 'matplotlib', 'numpy', 'pandas', 'IPython', 'PyQt5', 'PyQt6', 'PySide2'],
     noarchive=False,

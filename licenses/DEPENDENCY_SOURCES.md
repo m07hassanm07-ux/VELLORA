@@ -10,6 +10,8 @@
 - cffi 2.1.1: https://pypi.org/project/cffi/2.1.1/#files
 - pycparser 3.11: https://pypi.org/project/pycparser/3.11/#files
 - pywin32 311: https://github.com/mhammond/pywin32/tree/b311
+- pyHanko 0.38.0: https://pypi.org/project/pyHanko/0.38.0/#files
+- pyhanko-certvalidator 0.33.0: https://pypi.org/project/pyhanko-certvalidator/0.33.0/#files
 - NSIS 3.12: https://sourceforge.net/projects/nsis/files/NSIS%203/3.12/
 - CPython 3.12: https://www.python.org/downloads/source/ (match the exact runtime version in build-info.json)
 

@@ -1,12 +1,27 @@
 """Development entry point; packaged builds use the same application."""
 from pathlib import Path
-import sys
+import os, sys
 
 local_dependencies = Path(__file__).parent / ".deps"
 if local_dependencies.exists():
     sys.path.insert(0, str(local_dependencies))
     import site
     site.addsitedir(str(local_dependencies))
+
+# Frozen builds ship their own CA bundle.  Point OpenSSL at it before importing
+# pyHanko/aiohttp; otherwise their eager TLS setup can look for the developer
+# Python installation's certificate file, which does not exist on another PC.
+if getattr(sys, 'frozen', False):
+    try:
+        import certifi
+        ca_bundle = certifi.where()
+        if Path(ca_bundle).is_file():
+            # PyInstaller/OpenSSL may inherit a stale SSL_CERT_FILE pointing at
+            # the build-time Python runtime, so this must deliberately replace it.
+            os.environ['SSL_CERT_FILE'] = ca_bundle
+            os.environ.pop('SSL_CERT_DIR', None)
+    except ImportError:
+        pass
 
 if len(sys.argv) == 4 and sys.argv[1] == '--convert-office':
     from waraq.conversion import office_worker

@@ -1,5 +1,6 @@
 """Explicit isolated smoke check for a built executable; no physical print job."""
 from io import BytesIO
+from datetime import datetime,timedelta,timezone
 from pathlib import Path
 import json,os
 
@@ -21,6 +22,8 @@ def self_test(destination: str) -> int:
     from .textlayout import find_matches
     from .review import apply_review, list_review
     from .templates import builtin_template, encode_template, decode_template
+    from .signatures import sign_pkcs12,validate_signatures
+    from .preflight import preflight_pdf
     folder=Path(destination);folder.mkdir(parents=True,exist_ok=True)
     result={'version':__version__,'passed':False}
     try:
@@ -61,10 +64,27 @@ def self_test(destination: str) -> int:
         assert len(PdfReader(folder/'printed.pdf').pages)==2
         with pdfium.PdfDocument(data) as pdf:
             image=render_image(pdf,0,0.5);assert not image.isNull();image.save(str(folder/'preview.png'))
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes,serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives.serialization import pkcs12
+        from cryptography.x509.oid import NameOID
+        key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
+        name=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,'Waraqa Packaged Test')]);now=datetime.now(timezone.utc)
+        certificate=(x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now-timedelta(days=1)).not_valid_after(now+timedelta(days=1))
+            .add_extension(x509.BasicConstraints(ca=True,path_length=None),critical=True).sign(key,hashes.SHA256()))
+        pfx=pkcs12.serialize_key_and_certificates(b'waraqa',key,certificate,None,serialization.BestAvailableEncryption(b'packaged-test'))
+        pfx_path=folder/'test-certificate.pfx';pfx_path.write_bytes(pfx)
+        signed=sign_pkcs12(data,pfx_path,'packaged-test',reason='Packaged self-test')
+        signatures=validate_signatures(signed);assert len(signatures)==1 and signatures[0].intact and signatures[0].valid
+        (folder/'signed.pdf').write_bytes(signed);pfx_path.unlink()
+        assert preflight_pdf(data).pages==2
         result.update({'passed':True,'merge_pages':2,'print_pages':2,'encrypted_roundtrip':True,
             'rendered':True,'text_replacement':True,'editor_dialog':True,'search':True,
             'project_roundtrip':True,'review_annotation':True,'worker_process':True})
-        result.update({'inline_editor':True,'business_templates':True,'system_fonts':True})
+        result.update({'inline_editor':True,'business_templates':True,'system_fonts':True,
+            'digital_signature':True,'preflight':True})
     except Exception as exc:
         import traceback
         result['error']=str(exc) or repr(exc)
