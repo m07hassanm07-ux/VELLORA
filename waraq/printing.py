@@ -2,16 +2,50 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from io import BytesIO
+from pathlib import Path
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QPainter
 from PySide6.QtPrintSupport import QPrinter
 import pypdfium2 as pdfium
+from pypdf import PdfReader, PdfWriter
 
 from .rendering import render_image
 
 
 class PrintCancelled(Exception):
     pass
+
+
+def assemble_print_batch(paths: list[str | Path], progress: Callable[[int, int, str], bool] | None = None,
+                         cancelled: Callable[[], bool] | None = None) -> tuple[bytes, int]:
+    """Combine user-selected PDFs for one ordered print job without editing sources."""
+    files = [Path(path) for path in paths]
+    if not files:
+        raise ValueError("اختر ملف PDF واحدًا على الأقل للطباعة الدفعية.")
+    if len(files) > 100:
+        raise ValueError("الطباعة الدفعية محدودة بمائة ملف في العملية الواحدة.")
+    writer = PdfWriter(); pages = 0
+    try:
+        for index, path in enumerate(files):
+            if cancelled and cancelled():
+                raise PrintCancelled()
+            if path.suffix.casefold() != ".pdf" or not path.is_file():
+                raise ValueError(f"ملف الطباعة غير صالح: {path.name}")
+            if progress and not progress(index, len(files), f"جاري تجهيز {path.name}…"):
+                raise PrintCancelled()
+            reader = PdfReader(path, strict=False)
+            if reader.is_encrypted:
+                raise ValueError(f"الملف {path.name} محمي بكلمة مرور؛ افتحه واحفظ نسخة قابلة للطباعة أولًا.")
+            writer.append(reader, import_outline=False)
+            pages += len(reader.pages)
+        if not pages:
+            raise ValueError("لا تحتوي الملفات المختارة على صفحات قابلة للطباعة.")
+        output = BytesIO(); writer.write(output)
+        if progress: progress(len(files), len(files), "اكتمل تجهيز الملفات.")
+        return output.getvalue(), pages
+    finally:
+        writer.close()
 
 
 def requested_pages(printer: QPrinter, count: int, current: int = 0, selected: list[int] | None = None) -> list[int]:

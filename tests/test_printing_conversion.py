@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 import pypdfium2 as pdfium
 
 from waraq.core import Document,Overlay
-from waraq.printing import paint_pdf,requested_pages,PrintCancelled
+from waraq.printing import assemble_print_batch,paint_pdf,requested_pages,PrintCancelled
 from waraq.rendering import text_overlay,ensure_font_support,render_image
 from waraq.conversion import (acquire_wia_image,image_bytes_to_pdf,image_to_pdf,web_to_pdf,
     export_pdf_office,table_rows,ConversionError,run_process,ConversionCancelled)
@@ -75,6 +75,19 @@ class PrintingAndConversionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaises(PrintCancelled):
                 paint_pdf(self.printer(Path(folder)/'cancel.pdf'),stream.getvalue(),[0],lambda *_:False)
+
+    def test_batch_print_assembly_order_and_cancel(self):
+        with tempfile.TemporaryDirectory() as folder:
+            paths=[]
+            for index,width in enumerate((200,300,400)):
+                path=Path(folder)/f'{index}.pdf';writer=PdfWriter();writer.add_blank_page(width,500)
+                with path.open('wb') as stream:writer.write(stream)
+                paths.append(path)
+            data,count=assemble_print_batch(paths)
+            self.assertEqual(count,3)
+            self.assertEqual([float(page.mediabox.width) for page in PdfReader(BytesIO(data)).pages],[200,300,400])
+            with self.assertRaises(PrintCancelled):
+                assemble_print_batch(paths,lambda *_:False)
 
     def test_transparent_image_and_multipage_tiff(self):
         with tempfile.TemporaryDirectory() as folder:

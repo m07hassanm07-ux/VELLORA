@@ -26,7 +26,7 @@ from pypdf import PdfWriter
 from . import __version__
 from .core import Document, Overlay, PasswordRequired, atomic_write, parse_pages
 from .rendering import render_image, text_overlay, ensure_font_support
-from .printing import paint_pdf, requested_pages, PrintCancelled
+from .printing import assemble_print_batch, paint_pdf, requested_pages, PrintCancelled
 from .merge_dialog import MergeDialog
 from .conversion import (acquire_wia_image, convert_file, image_bytes_to_pdf,
                          web_to_pdf, export_pdf_office, SUPPORTED_TYPES, ConversionCancelled)
@@ -541,6 +541,7 @@ class MainWindow(QMainWindow):
             (files, "web", "إنشاء PDF من صفحة ويب…", "", self.import_web),
             (files, "save", "حفظ نسخة…", "Ctrl+S", self.save_document),
             (files, "print", "طباعة…", "Ctrl+P", self.print_document),
+            (files, "batchprint", "طباعة دفعية لملفات PDF…", "", self.print_batch),
             (files, "printpreview", "معاينة الطباعة…", "Ctrl+Shift+P", self.print_preview),
             (files, "extract", "استخراج صفحات…", "Ctrl+E", self.extract_pages),
             (files, "blank", "إضافة صفحة فارغة", "Ctrl+N", self.add_blank),
@@ -1702,6 +1703,38 @@ class MainWindow(QMainWindow):
             self.error(exc)
         finally:
             progress.close()
+
+    def print_batch(self):
+        paths,_=QFileDialog.getOpenFileNames(self,"اختيار ملفات PDF للطباعة الدفعية","","PDF (*.pdf)")
+        if not paths:return
+        try:
+            data,count=run_task(self,"تجهيز الطباعة الدفعية",
+                lambda report,cancelled: assemble_print_batch(paths,report,cancelled))
+        except (PrintCancelled,JobCancelled):
+            self.statusBar().showMessage("تم إلغاء تجهيز الطباعة الدفعية.",10000);return
+        except Exception as exc:
+            self.error(exc,exc);return
+        printer=QPrinter(QPrinter.PrinterMode.HighResolution);printer.setResolution(300)
+        printer.setDocName(f"ورقة — طباعة دفعية ({len(paths)} ملفات)");printer.setFromTo(1,count)
+        dialog=QPrintDialog(printer,self);dialog.setMinMax(1,count)
+        dialog.setOption(QAbstractPrintDialog.PrintDialogOption.PrintPageRange,True)
+        if dialog.exec()!=QDialog.DialogCode.Accepted:return
+        options=PrintOptionsDialog(self)
+        if options.exec()!=QDialog.DialogCode.Accepted:return
+        indexes=requested_pages(printer,count)
+        progress=QProgressDialog("جاري إرسال الطباعة الدفعية…","إلغاء",0,len(indexes),self)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal);progress.setMinimumDuration(0)
+        def tick(done,total):
+            progress.setMaximum(total);progress.setValue(done);QApplication.processEvents()
+            return not progress.wasCanceled()
+        try:
+            printed=paint_pdf(printer,data,indexes,tick,pages_per_sheet=options.nup.currentData(),
+                              grayscale=options.grayscale.isChecked())
+            self.statusBar().showMessage(f"تم إرسال {printed} صفحة من {len(paths)} ملفات إلى الطابعة.",15000)
+        except PrintCancelled:
+            self.statusBar().showMessage("تم إلغاء الطباعة الدفعية؛ قد تكون بعض الصفحات أُرسلت بالفعل.",15000)
+        except Exception as exc:self.error(exc,exc)
+        finally:progress.close()
 
     def print_preview(self):
         if not self.document.pages:
