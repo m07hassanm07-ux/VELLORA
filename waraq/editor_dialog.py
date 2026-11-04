@@ -179,6 +179,8 @@ class PageEditorDialog(QDialog):
         self.size = QDoubleSpinBox(); self.size.setRange(4, 200); self.size.setDecimals(1); self.size.setValue(16)
         self.size.valueChanged.connect(self.mark_pending); form.addRow('حجم الخط', self.size)
         self.bold = QCheckBox('خط عريض'); self.bold.toggled.connect(self.mark_pending); form.addRow('', self.bold)
+        self.auto_fit = QCheckBox('ملاءمة النص تلقائيًا داخل المساحة'); self.auto_fit.setChecked(True)
+        self.auto_fit.toggled.connect(self.mark_pending); form.addRow('', self.auto_fit)
         self.color = QComboBox()
         for label, value in [('أسود', '#172a32'), ('أزرق', '#174b91'), ('أخضر', '#087a63'), ('أحمر', '#b62432')]:
             self.color.addItem(label, value)
@@ -366,7 +368,8 @@ class PageEditorDialog(QDialog):
             image=self.image if self.mode == 'image' else None,
             rect=(rect.x(), rect.y(), rect.width(), rect.height()), size=self.size.value(),
             family=self.font.currentFont().family(), color=self.color.currentData(), bold=self.bold.isChecked(),
-            alignment=self.alignment.currentData(), selected_chars=self.selected_chars() if self.mode == 'select' else None)
+            alignment=self.alignment.currentData(), selected_chars=self.selected_chars() if self.mode == 'select' else None,
+            auto_fit=self.auto_fit.isChecked())
 
     def preview_change(self):
         try:

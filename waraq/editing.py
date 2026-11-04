@@ -182,7 +182,8 @@ def _remove_objects(data: bytes, indexes: list[int], selected_chars=None) -> byt
             page.close()
 
 
-def _layer(width, height, rect, *, text=None, image=None, size=16, family='Segoe UI', color='#123b48', bold=False, alignment='auto'):
+def _layer(width, height, rect, *, text=None, image=None, size=16, family='Segoe UI', color='#123b48', bold=False,
+           alignment='auto', auto_fit=False):
     ensure_font_support()
     x, y, w, h = rect
     if not all(math.isfinite(v) for v in (x, y, w, h, width, height)) or w <= 0 or h <= 0 or x < 0 or y < 0 or x+w > width+.01 or y+h > height+.01:
@@ -211,6 +212,11 @@ def _layer(width, height, rect, *, text=None, image=None, size=16, family='Segoe
         # Plain text only: PDF text is never interpreted as rich HTML.
         layout.setPlainText(text)
         layout.setTextWidth(w)
+        if auto_fit:
+            fitted=float(size)
+            while layout.size().height() > h+.5 and fitted > 4.01:
+                fitted=max(4.0,fitted-.5)
+                font.setPointSizeF(fitted);layout.setDefaultFont(font);layout.setTextWidth(w)
         if layout.size().height() > h+.5:
             raise ValueError('النص أكبر من المساحة المحددة. وسّع المربع أو قلّل حجم الخط ثم جرّب المعاينة.')
     elif image.isNull():
@@ -243,7 +249,8 @@ def _layer(width, height, rect, *, text=None, image=None, size=16, family='Segoe
 
 
 def edit_page(data: bytes, indexes=(), *, text=None, image: QImage | None=None, rect=None,
-              size=16, family='Segoe UI', color='#123b48', bold=False, alignment='auto', selected_chars=None) -> bytes:
+              size=16, family='Segoe UI', color='#123b48', bold=False, alignment='auto', selected_chars=None,
+              auto_fit=False) -> bytes:
     """Delete selected objects and optionally place a new vector-text/image layer.
 
     The caller owns source bytes; a failure returns no replacement and changes
@@ -257,7 +264,8 @@ def edit_page(data: bytes, indexes=(), *, text=None, image: QImage | None=None, 
     if text is not None or image is not None:
         if rect is None:
             raise ValueError('حدد مكان الإضافة على الصفحة.')
-        layer = _layer(width, height, rect, text=text, image=image, size=size, family=family, color=color, bold=bold, alignment=alignment)
+        layer = _layer(width, height, rect, text=text, image=image, size=size, family=family, color=color,
+                       bold=bold, alignment=alignment, auto_fit=auto_fit)
     elif not indexes:
         raise ValueError('حدد عنصرًا للحذف.')
     changed = _remove_objects(data, list(indexes), selected_chars)

@@ -84,6 +84,13 @@ class PageEditingTests(unittest.TestCase):
                 edit_page(source, [index], text='NEW', rect=rect)
         with self.assertRaisesRegex(ValueError, 'النص أكبر'):
             edit_page(source, [index], text='Too much content '*20, rect=(10, 10, 20, 10), size=30)
+
+    def test_auto_fit_reflows_paragraph_inside_existing_box(self):
+        source=prepare_page(text_fixture());index=inspect_page(source)[2][0].index
+        changed=edit_page(source,[index],text='A longer replacement paragraph that wraps across several lines',
+                          rect=(40,60,220,55),size=22,auto_fit=True)
+        extracted=' '.join(PdfReader(BytesIO(changed)).pages[0].extract_text().split())
+        self.assertIn('longer replacement paragraph',extracted)
         self.assertIn('OLD TEXT', PdfReader(BytesIO(source)).pages[0].extract_text())
 
     def test_cropped_rotated_page_normalizes_without_visual_change(self):
