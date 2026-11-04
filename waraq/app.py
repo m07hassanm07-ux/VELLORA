@@ -1112,7 +1112,8 @@ class MainWindow(QMainWindow):
 
     def begin_create_form_field(self):
         if not self.document.pages:return
-        labels=['حقل نص','مربع اختيار','قائمة اختيار'];kinds=['text','checkbox','choice']
+        labels=['حقل نص','مربع اختيار','قائمة اختيار','زر إعادة ضبط','حقل مجموع حسابي']
+        kinds=['text','checkbox','choice','button','calculation']
         label,ok=QInputDialog.getItem(self,'إنشاء حقل نموذج','نوع الحقل:',labels,0,False)
         if not ok:return
         kind=kinds[labels.index(label)]
@@ -1123,12 +1124,23 @@ class MainWindow(QMainWindow):
             value,ok=QInputDialog.getText(self,'القيمة الافتراضية','القيمة الافتراضية (اختيارية):')
             if not ok:return
         elif kind=='checkbox':value='Off'
-        else:
+        elif kind=='button':
+            value,ok=QInputDialog.getText(self,'عنوان الزر','النص الظاهر على زر إعادة الضبط:',text='إعادة ضبط النموذج')
+            if not ok:return
+        elif kind=='choice':
             raw,ok=QInputDialog.getMultiLineText(self,'خيارات القائمة','اكتب كل خيار في سطر مستقل:')
             if not ok:return
             options=[line.strip() for line in raw.splitlines() if line.strip()]
             if not options:self.error('أضف خيارًا واحدًا على الأقل للقائمة.');return
             value=options[0]
+        else:
+            data=self.assembled_bytes('قراءة حقول النموذج')
+            available=[field.name for field in list_form_fields(data) if field.kind=='/Tx']
+            raw,ok=QInputDialog.getMultiLineText(self,'حقول المجموع',
+                'اكتب الاسم الداخلي لكل حقل رقمي في سطر مستقل:\nالمتاح: '+('، '.join(available) or 'لا توجد حقول نصية'))
+            if not ok:return
+            options=[line.strip() for line in raw.splitlines() if line.strip()]
+            if not options:self.error('أضف حقلًا رقميًا واحدًا على الأقل للحساب.');return
         self._pending_form_field={'kind':kind,'name':name.strip(),'value':value,'options':options}
         self.image_label.tool='form';self.image_label.setCursor(Qt.CursorShape.CrossCursor)
         self.statusBar().showMessage('اسحب على الصفحة لتحديد مكان وحجم الحقل الجديد. Esc للإلغاء.',15000)

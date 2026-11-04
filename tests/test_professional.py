@@ -47,15 +47,21 @@ class ProfessionalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "غير موجودة"):
             fill_form_fields(sample_form(), {"missing": "x"})
 
-    def test_create_text_checkbox_and_choice_fields(self):
+    def test_create_text_checkbox_choice_button_and_calculation_fields(self):
         writer = PdfWriter(); writer.add_blank_page(300, 400); stream = BytesIO(); writer.write(stream)
         data = add_form_field(stream.getvalue(), 0, "text", "full_name", (20, 30, 180, 30), value="Ali")
         data = add_form_field(data, 0, "checkbox", "approved", (20, 80, 20, 20), value="yes")
         data = add_form_field(data, 0, "choice", "department", (20, 120, 160, 30), options=["HR", "IT"])
+        data = add_form_field(data, 0, "text", "amount_a", (20, 160, 100, 25), value="12.5")
+        data = add_form_field(data, 0, "text", "amount_b", (130, 160, 100, 25), value="7.5")
+        data = add_form_field(data, 0, "calculation", "total", (20, 200, 160, 30), options=["amount_a", "amount_b"])
+        data = add_form_field(data, 0, "button", "reset", (20, 250, 100, 30), value="Reset")
         fields = {field.name: field for field in list_form_fields(data)}
-        self.assertEqual(set(fields), {"full_name", "approved", "department"})
+        self.assertEqual(set(fields), {"full_name", "approved", "department", "amount_a", "amount_b", "total", "reset"})
         self.assertEqual(fields["full_name"].value, "Ali")
         self.assertEqual(fields["department"].options, ("HR", "IT"))
+        filled = fill_form_fields(data, {"amount_a": "30", "amount_b": "12.25"})
+        self.assertEqual(str(PdfReader(BytesIO(filled)).get_fields()["total"]["/V"]), "42.25")
         with self.assertRaisesRegex(ValueError, "بهذا الاسم"):
             add_form_field(data, 0, "text", "full_name", (20, 200, 100, 20))
 

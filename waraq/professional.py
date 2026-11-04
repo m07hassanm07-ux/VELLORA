@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 import ctypes
+import json
 import re
 
 import pypdfium2 as pdfium
@@ -39,7 +40,8 @@ class SignatureInfo:
     has_cryptographic_value: bool
 
 
-FIELD_KINDS = {"text": "/Tx", "checkbox": "/Btn", "choice": "/Ch"}
+FIELD_KINDS = {"text": "/Tx", "checkbox": "/Btn", "choice": "/Ch",
+               "button": "/Btn", "calculation": "/Tx"}
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,26 @@ def fill_form_fields(data: bytes, values: dict[str, str], *, flatten: bool = Fal
     unknown = sorted(set(values) - known)
     if unknown:
         raise ValueError("حقول غير موجودة: " + "، ".join(unknown))
+    values = dict(values)
+    # Recalculate only formulas created by Waraqa.  Arbitrary PDF JavaScript is
+    # deliberately never evaluated.
+    raw_fields = reader.trailer["/Root"].get("/AcroForm", {}).get("/Fields", [])
+    for reference in raw_fields:
+        field = reference.get_object()
+        field_name = str(field.get("/T", ""))
+        sources = field.get("/WaraqCalcSources")
+        if not sources:
+            continue
+        total = 0.0
+        for source in sources:
+            source_name = str(source)
+            source_field = (reader.get_fields() or {}).get(source_name, {})
+            raw = values.get(source_name, str(source_field.get("/V", "0")))
+            try:
+                total += float(str(raw).strip().replace(",", ""))
+            except ValueError:
+                raise ValueError(f"الحقل «{source_name}» يجب أن يحتوي رقمًا لإجراء الحساب.")
+        values[str(field_name)] = str(int(total)) if total.is_integer() else f"{total:.10g}"
     writer = PdfWriter()
     writer.append(reader, import_outline=True)
     writer.set_need_appearances_writer(False)
@@ -141,6 +163,11 @@ def add_form_field(data: bytes, page_index: int, kind: str, name: str,
     if kind == "checkbox":
         field[NameObject("/V")] = NameObject("/Yes" if value.casefold() in {"yes", "true", "1", "on"} else "/Off")
         field[NameObject("/AS")] = field[NameObject("/V")]
+    elif kind == "button":
+        label = (value.strip() or "إعادة ضبط النموذج")[:120]
+        field[NameObject("/Ff")] = NumberObject(1 << 16)
+        field[NameObject("/MK")] = DictionaryObject({NameObject("/CA"): TextStringObject(label)})
+        field[NameObject("/A")] = DictionaryObject({NameObject("/S"): NameObject("/ResetForm")})
     else:
         field[NameObject("/V")] = TextStringObject(value[:4000])
         field[NameObject("/DA")] = TextStringObject("/Helv 10 Tf 0 g")
@@ -148,6 +175,19 @@ def add_form_field(data: bytes, page_index: int, kind: str, name: str,
             choices = [str(item).strip() for item in (options or []) if str(item).strip()]
             if not choices: raise ValueError("أضف خيارًا واحدًا على الأقل للقائمة.")
             field[NameObject("/Opt")] = ArrayObject([TextStringObject(item[:500]) for item in choices])
+        elif kind == "calculation":
+            known = reader.get_fields() or {}
+            sources = [str(item).strip() for item in (options or []) if str(item).strip()]
+            missing = [item for item in sources if item not in known]
+            if not sources:
+                raise ValueError("اختر حقلًا رقميًا واحدًا على الأقل للحساب.")
+            if missing:
+                raise ValueError("حقول الحساب غير موجودة: " + "، ".join(missing))
+            field[NameObject("/Ff")] = NumberObject(1)
+            field[NameObject("/WaraqCalcSources")] = ArrayObject([TextStringObject(item) for item in sources])
+            script = f'AFSimple_Calculate("SUM", {json.dumps(sources, ensure_ascii=False)});'
+            field[NameObject("/AA")] = DictionaryObject({NameObject("/C"): DictionaryObject({
+                NameObject("/S"): NameObject("/JavaScript"), NameObject("/JS"): TextStringObject(script)})})
     reference = writer._add_object(field)
     annotations = page.get("/Annots")
     if annotations is None:
@@ -160,7 +200,7 @@ def add_form_field(data: bytes, page_index: int, kind: str, name: str,
     if fields is None: fields = ArrayObject(); acroform[NameObject("/Fields")] = fields
     fields.append(reference)
     acroform[NameObject("/NeedAppearances")] = BooleanObject(True)
-    if kind != "checkbox":
+    if kind not in {"checkbox", "button"}:
         font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
             NameObject("/Subtype"): NameObject("/Type1"), NameObject("/BaseFont"): NameObject("/Helvetica")})
         resources = acroform.get("/DR") or DictionaryObject()
