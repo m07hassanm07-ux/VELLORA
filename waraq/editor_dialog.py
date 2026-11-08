@@ -345,20 +345,18 @@ class PageEditorDialog(QDialog):
             self.open_direct_editor()
 
     def open_direct_editor(self):
-        """Place an editable 100x100-or-larger box over the selected text."""
+        """Place an editor over the original text box and grow it as needed."""
         if not self.selected_entries() and self.mode != 'text':
             return
         if self.direct_proxy is not None and self.direct_proxy.scene() is not None:
             self.canvas.scene().removeItem(self.direct_proxy)
         rect = self.rect()
-        view_scale = max(.1, self.canvas.transform().m11())
-        rect.setWidth(max(rect.width(), 100 / view_scale))
-        rect.setHeight(max(rect.height(), 100 / view_scale))
+        rect.setWidth(max(rect.width(), self.size.value() * 4))
+        rect.setHeight(max(rect.height(), self.size.value() * 1.9))
         rect = rect.intersected(QRectF(0, 0, self.width, self.height))
         self.set_rect(rect)
         editor = QPlainTextEdit()
         editor.setPlainText(self.text.toPlainText())
-        editor.setMinimumSize(100, 100)
         editor.setFrameStyle(0)
         editor.setStyleSheet('QPlainTextEdit { background: rgba(255,255,255,238); border: 2px solid #c9343e; padding: 5px; selection-background-color: #ef9aa1; }')
         proxy = self.canvas.scene().addWidget(editor)
@@ -366,6 +364,7 @@ class PageEditorDialog(QDialog):
         proxy.setZValue(20)
         self.direct_editor, self.direct_proxy = editor, proxy
         editor.textChanged.connect(self.direct_text_changed)
+        editor.document().documentLayout().documentSizeChanged.connect(self.grow_direct_editor)
         self.update_direct_style()
         editor.setFocus(); editor.selectAll()
         self.status.setText('عدّل النص مباشرة داخل المربع الأحمر. يمكن أن يكون النص أطول أو أقصر ثم اضغط «تطبيق على الصفحة».')
@@ -377,6 +376,16 @@ class PageEditorDialog(QDialog):
         self.text.setPlainText(self.direct_editor.toPlainText())
         self._direct_sync = False
         self.mark_pending()
+
+    def grow_direct_editor(self, size):
+        """Grow the in-page box for longer text without imposing a fixed size."""
+        if self.direct_proxy is None or self.direct_proxy.scene() is None:
+            return
+        rect = self.direct_proxy.geometry()
+        wanted_height = max(rect.height(), size.height() + 14)
+        rect.setHeight(min(wanted_height, self.height - rect.top()))
+        self.direct_proxy.setGeometry(rect)
+        self.set_rect(rect)
 
     def update_direct_style(self, *_):
         if self.direct_editor is None:
