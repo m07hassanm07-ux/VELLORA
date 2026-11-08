@@ -297,6 +297,37 @@ class PrintOptionsDialog(QDialog):
         buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
 
 
+class CreateDocumentDialog(QDialog):
+    """Start a PDF from a blank page, business template or existing files."""
+    def __init__(self,parent=None,has_document=False):
+        super().__init__(parent);self.setWindowTitle('إنشاء مستند PDF جديد');self.resize(620,520)
+        layout=QVBoxLayout(self)
+        title=QLabel('ابدأ مستندًا جديدًا');title.setObjectName('section');layout.addWidget(title)
+        note=QLabel('اختر صفحة فارغة أو قالبًا جاهزًا. يمكنك تعديل النصوص مباشرة بعد الإنشاء.');note.setWordWrap(True);layout.addWidget(note)
+        self.choices=QListWidget();self.choices.setSpacing(4)
+        entries=[('صفحة فارغة A4','مستند فارغ عمودي','blank-a4'),('صفحة فارغة أفقية','A4 بالاتجاه الأفقي','blank-landscape'),
+                 ('صفحة Letter','مقاس المراسلات الأمريكي','blank-letter'),('تقرير عمل','قالب تقرير قابل للتحرير','report'),
+                 ('خطاب رسمي','قالب خطاب وهوية مؤسسة','letter'),('محضر اجتماع','الحضور والجدول والقرارات','meeting'),
+                 ('قالب محفوظ…','فتح قالب .waraqt سبق حفظه','saved'),('إنشاء من ملفات…','صور أو Office أو PDF','files')]
+        for label,description,value in entries:
+            item=QListWidgetItem(f'{label}\n{description}');item.setData(Qt.ItemDataRole.UserRole,value);item.setSizeHint(QSize(0,48));self.choices.addItem(item)
+        self.choices.setCurrentRow(0);self.choices.itemDoubleClicked.connect(lambda _:self.accept());layout.addWidget(self.choices,1)
+        form=QFormLayout();self.pages=QSpinBox();self.pages.setRange(1,100);self.pages.setValue(1);form.addRow('عدد الصفحات الفارغة',self.pages)
+        self.name=QLineEdit('مستند جديد');form.addRow('اسم المستند',self.name);layout.addLayout(form)
+        self.append_current=QCheckBox('إضافة الصفحات إلى المستند المفتوح بدل إنشاء مستند مستقل')
+        self.append_current.setVisible(has_document);layout.addWidget(self.append_current)
+        self.choices.currentRowChanged.connect(self.update_options);self.update_options()
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('إنشاء المستند');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
+        buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
+
+    def kind(self):
+        item=self.choices.currentItem();return item.data(Qt.ItemDataRole.UserRole) if item else 'blank-a4'
+
+    def update_options(self,*_):
+        self.pages.setEnabled(self.kind().startswith('blank'))
+
+
 class ShortcutDialog(QDialog):
     def __init__(self, window):
         super().__init__(window);self.window=window;self.setWindowTitle('تخصيص اختصارات لوحة المفاتيح');self.resize(650,560)
@@ -917,10 +948,34 @@ class MainWindow(QMainWindow):
             self.import_paths(dialog.paths(), append=dialog.append_current.isChecked())
 
     def create_pdf_dialog(self):
-        filters = "الملفات المدعومة (*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp *.doc *.docx *.xls *.xlsx *.ppt *.pptx *.rtf *.txt *.odt *.ods *.odp *.html *.htm);;PDF (*.pdf);;صور (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp);;Office (*.doc *.docx *.xls *.xlsx *.ppt *.pptx *.rtf *.odt *.ods *.odp)"
-        paths, _ = QFileDialog.getOpenFileNames(self, "إنشاء PDF من ملفات", "", filters)
-        if paths:
-            self.import_paths(paths, append=bool(self.document.pages))
+        dialog=CreateDocumentDialog(self,bool(self.document.pages))
+        if dialog.exec()!=QDialog.DialogCode.Accepted:return
+        kind=dialog.kind();append=dialog.append_current.isChecked() and bool(self.document.pages)
+        if kind=='files':
+            filters = "الملفات المدعومة (*.pdf *.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp *.doc *.docx *.xls *.xlsx *.ppt *.pptx *.rtf *.txt *.odt *.ods *.odp *.html *.htm);;PDF (*.pdf);;صور (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp);;Office (*.doc *.docx *.xls *.xlsx *.ppt *.pptx *.rtf *.odt *.ods *.odp)"
+            paths,_=QFileDialog.getOpenFileNames(self,'إنشاء PDF من ملفات','',filters)
+            if paths:self.import_paths(paths,append=append)
+            return
+        try:
+            if kind=='saved':
+                path,_=QFileDialog.getOpenFileName(self,'إنشاء من قالب محفوظ','','قالب ورقة (*.waraqt)')
+                if not path:return
+                template_name,data=decode_template(Path(path).read_bytes());source_name=template_name+'.pdf'
+            elif kind in ('report','letter','meeting'):
+                template_name,data=builtin_template(kind);source_name=template_name+'.pdf'
+            else:
+                sizes={'blank-a4':(595.28,841.89),'blank-landscape':(841.89,595.28),'blank-letter':(612,792)}
+                width,height=sizes[kind];writer=PdfWriter()
+                for _ in range(dialog.pages.value()):writer.add_blank_page(width,height)
+                stream=BytesIO();writer.write(stream);writer.close();data=stream.getvalue();source_name=(dialog.name.text().strip() or 'مستند جديد')+'.pdf'
+            if not append and self.document.pages:
+                if not self.confirm_discard():return
+                self.close_pdfs();self.document=Document();self.last_output=None;self.clear_recovery()
+                self.project_path=None;self.project_password='';self._autosave_fingerprint=None
+            index=len(self.document.pages);self.document.import_bytes(source_name,data);self.refresh(index)
+            self.document_name.setText(dialog.name.text().strip() or Path(source_name).stem)
+            self.statusBar().showMessage('تم إنشاء المستند. اختر «تعديل PDF» لبدء الكتابة مباشرة داخل الصفحة.',12000)
+        except Exception as exc:self.error(exc,exc)
 
     def conversion_progress(self, label):
         progress = QProgressDialog(label, "إلغاء", 0, 0, self)

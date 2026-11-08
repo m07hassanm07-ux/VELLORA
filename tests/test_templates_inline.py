@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QApplication, QStackedWidget
 
 from waraq.templates import encode_template, decode_template, builtin_template
 from waraq.editor_dialog import PageEditorDialog
-from waraq.app import MainWindow
+from waraq.app import MainWindow, CreateDocumentDialog
 
 
 def blank_page():
@@ -32,6 +32,12 @@ class TemplateAndInlineTests(unittest.TestCase):
         stack=QStackedWidget();editor=PageEditorDialog(blank_page(),stack,embedded=True);stack.addWidget(editor)
         self.assertTrue(editor.embedded);self.assertGreater(editor.font.count(),0)
         self.assertFalse(editor.isWindow());editor.close();stack.close()
+
+    def test_new_document_dialog_offers_blank_pages_and_templates(self):
+        dialog=CreateDocumentDialog(has_document=False)
+        kinds=[dialog.choices.item(i).data(256) for i in range(dialog.choices.count())]
+        self.assertIn('blank-a4',kinds);self.assertIn('letter',kinds);self.assertIn('saved',kinds)
+        dialog.close()
 
     def test_main_window_enters_and_leaves_inline_edit_mode(self):
         window=MainWindow();window.document.import_bytes('blank.pdf',blank_page());window.refresh()
