@@ -1340,14 +1340,15 @@ class MainWindow(QMainWindow):
             match=self.search_matches[row];self.pending_match=(match['page'],match['rects'])
             self.go_to_page(match['page']+1);self.schedule_preview()
 
-    def ocr_document(self):
+    def ocr_document(self,indexes_override=None):
         if not self.document.pages:return
+        if isinstance(indexes_override,bool):indexes_override=None
         settings=QSettings();configured=settings.value('ocr/engine','')
         dialog=OcrDialog(find_tesseract(configured),self)
         if dialog.exec()!=QDialog.DialogCode.Accepted:return
         engine=dialog.engine.text().strip()
         if engine:settings.setValue('ocr/engine',engine)
-        indexes=self.selected() if dialog.scope.currentData() else list(range(len(self.document.pages)))
+        indexes=list(indexes_override) if indexes_override is not None else (self.selected() if dialog.scope.currentData() else list(range(len(self.document.pages))))
         try:
             job=self.document_job('التعرف على النص OCR','ocr',{'indexes':indexes,'language':dialog.language.currentData(),'engine':engine,'skip_text':dialog.skip.isChecked(),'preprocess':dialog.preprocess.isChecked()})
             result,report=job['data'],job['report']
@@ -1490,6 +1491,7 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(editor);self.stack.setCurrentWidget(editor)
             editor.accepted.connect(self.finish_inline_edit)
             editor.rejected.connect(self.cancel_inline_edit)
+            editor.ocr_requested.connect(lambda:self.ocr_page_from_editor(index))
             self.edit_button.setText('جارٍ التحرير')
             self.statusBar().showMessage('وضع التحرير المباشر: اختر النص أو الصورة من الصفحة، ثم عدّل الخصائص من اللوحة اليمنى.')
         except JobCancelled:pass
@@ -1505,6 +1507,11 @@ class MainWindow(QMainWindow):
         if changed:self.document.replace_page(index,editor.data)
         self.refresh(index)
         self.statusBar().showMessage('طُبّقت تعديلات الصفحة. اختر «حفظ نسخة» لحفظ المستند المعدّل.',12000)
+
+    def ocr_page_from_editor(self,index):
+        self.cancel_inline_edit()
+        self.pages.setCurrentRow(index);self.pages.clearSelection();self.pages.item(index).setSelected(True)
+        self.ocr_document([index])
 
     def cancel_inline_edit(self):
         editor=self._page_editor
@@ -1806,7 +1813,25 @@ class MainWindow(QMainWindow):
     def save_document(self, *_):
         if not self.document.pages:
             return False
+        if not self.confirm_save_preflight():
+            return False
         return self.export(None)
+
+    def confirm_save_preflight(self):
+        """Warn about issues that can materially affect the saved result."""
+        try:
+            report=preflight_pdf(self.assembled_bytes('فحص سريع قبل الحفظ'))
+        except JobCancelled:return False
+        except Exception:return True
+        important=[issue for issue in report.issues if issue.code in ('signatures','javascript','fonts')]
+        if not important:return True
+        box=QMessageBox(self);box.setIcon(QMessageBox.Icon.Warning);box.setWindowTitle('فحص سريع قبل الحفظ')
+        box.setText('اكتشف ورقة نقاطًا تستحق المراجعة قبل إنشاء النسخة الجديدة.')
+        box.setInformativeText('\n'.join('• '+issue.message for issue in important))
+        box.setDetailedText('\n'.join(f'{issue.code}: {issue.message}' for issue in report.issues))
+        proceed=box.addButton('متابعة الحفظ',QMessageBox.ButtonRole.AcceptRole)
+        box.addButton('إلغاء ومراجعة المستند',QMessageBox.ButtonRole.RejectRole)
+        box.exec();return box.clickedButton()==proceed
 
     def print_document(self):
         if not self.document.pages:

@@ -171,6 +171,8 @@ class EditCanvas(QGraphicsView):
 
 
 class PageEditorDialog(QDialog):
+    ocr_requested = Signal()
+
     def __init__(self, data, parent=None, embedded=False):
         super().__init__(parent)
         ensure_font_support()
@@ -195,6 +197,7 @@ class PageEditorDialog(QDialog):
         for label, callback in [('تحديد عنصر', self.select_mode), ('نص جديد', self.new_text), ('إضافة صورة…', self.choose_image),
                                 ('استبدال الصورة…', self.replace_selected_image), ('إدراج جدول…', self.new_table)]:
             button = QPushButton(label); button.clicked.connect(callback); toolbar.addWidget(button)
+        self.ocr_button=QPushButton('OCR لهذه الصفحة');self.ocr_button.clicked.connect(self.ocr_requested.emit);toolbar.addWidget(self.ocr_button)
         self.undo_button = QPushButton('تراجع'); self.undo_button.clicked.connect(self.undo); toolbar.addWidget(self.undo_button)
         self.redo_button = QPushButton('إعادة'); self.redo_button.clicked.connect(self.redo); toolbar.addWidget(self.redo_button)
         layout.addLayout(toolbar)
@@ -244,6 +247,9 @@ class PageEditorDialog(QDialog):
             spin.valueChanged.connect(self.geometry_changed); self.geometry.append(spin); form.addRow(label, spin)
         controls.addLayout(form)
         preview = QPushButton('معاينة التعديل'); preview.clicked.connect(self.preview_change); controls.addWidget(preview)
+        self.before_after_button=QPushButton('عرض قبل / بعد');self.before_after_button.setEnabled(False)
+        self.before_after_button.clicked.connect(self.toggle_before_after);controls.addWidget(self.before_after_button)
+        self.showing_after=True
         self.apply_button = QPushButton('تطبيق على الصفحة'); self.apply_button.clicked.connect(self.apply_change); controls.addWidget(self.apply_button)
         self.delete_button = QPushButton('حذف المحدد'); self.delete_button.clicked.connect(self.delete_selected); controls.addWidget(self.delete_button)
         controls.addStretch()
@@ -257,7 +263,7 @@ class PageEditorDialog(QDialog):
         quick.addWidget(QLabel('الحجم')); quick.addWidget(self.size)
         quick.addWidget(self.bold); quick.addWidget(self.color)
         quick.addWidget(self.alignment); quick.addWidget(self.auto_fit)
-        quick.addStretch(); quick.addWidget(self.delete_button); quick.addWidget(self.apply_button)
+        quick.addStretch(); quick.addWidget(preview);quick.addWidget(self.before_after_button);quick.addWidget(self.delete_button); quick.addWidget(self.apply_button)
         layout.addLayout(quick)
         # Retain non-visual selection/geometry controls as state holders without
         # showing the former side panel.
@@ -303,6 +309,7 @@ class PageEditorDialog(QDialog):
         self.canvas.set_page(self.data)
         self.direct_editor = None; self.direct_proxy = None; self.direct_toolbar_proxy = None
         self.status.setText(f'{len(self.entries)} عنصرًا نصيًا أو صورة قابلًا للتحديد' if self.entries else 'لا توجد نصوص أو صور مستقلة قابلة للتعديل. يمكنك إضافة نص أو صورة؛ النص داخل المسح الضوئي يحتاج OCR.')
+        self.ocr_button.setVisible(not bool(self.entries))
         self.delete_button.setEnabled(False)
         self.undo_button.setEnabled(bool(self.history)); self.redo_button.setEnabled(bool(self.future))
         self.pending = False
@@ -343,6 +350,7 @@ class PageEditorDialog(QDialog):
             return
         if self.draft is not None:
             self.draft = None; self.canvas.set_page(self.data); self.canvas.highlight(self.rect())
+        self.before_after_button.setEnabled(False);self.before_after_button.setText('عرض قبل / بعد');self.showing_after=True
 
     def object_selected(self):
         if self.loading:
@@ -559,9 +567,16 @@ class PageEditorDialog(QDialog):
     def preview_change(self):
         try:
             self.draft = self.make_change(); self.canvas.set_page(self.draft)
+            self.showing_after=True;self.before_after_button.setEnabled(True);self.before_after_button.setText('عرض الأصل')
             self.status.setText('هذه معاينة فقط. اضغط «تطبيق على الصفحة» للاحتفاظ بها داخل المحرر.')
         except Exception as exc:
             QMessageBox.warning(self, 'تعذر التعديل', str(exc))
+
+    def toggle_before_after(self):
+        if self.draft is None:return
+        self.showing_after=not self.showing_after
+        self.canvas.set_page(self.draft if self.showing_after else self.data)
+        self.before_after_button.setText('عرض الأصل' if self.showing_after else 'عرض التعديل')
 
     def commit(self, data):
         self.history.append(self.data); self.history = self.history[-30:]

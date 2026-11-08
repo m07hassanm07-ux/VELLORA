@@ -1,3 +1,3 @@
 """Waraq PDF: independent PDF tools. No Adobe code or assets are used."""
 
-__version__ = "1.7.0"
+__version__ = "1.8.0"
