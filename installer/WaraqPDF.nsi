@@ -15,7 +15,7 @@ SetCompressor /SOLID lzma
 BrandingText "ورقة — أدوات PDF مفتوحة المصدر"
 ShowInstDetails show
 ShowUninstDetails show
-VIProductVersion "1.5.0.0"
+VIProductVersion "1.5.1.0"
 VIAddVersionKey "ProductName" "ورقة"
 VIAddVersionKey "FileDescription" "مثبّت ورقة"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"

@@ -18,6 +18,7 @@ from .fonts import install_font
 class EditCanvas(QGraphicsView):
     region_selected = Signal(QRectF)
     rect_changed = Signal(QRectF)
+    text_double_clicked = Signal(QPointF)
 
     def __init__(self):
         super().__init__()
@@ -126,6 +127,12 @@ class EditCanvas(QGraphicsView):
             self.region_selected.emit(rect); event.accept(); return
         super().mouseReleaseEvent(event)
 
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.text_double_clicked.emit(self.mapToScene(event.position().toPoint()))
+            event.accept(); return
+        super().mouseDoubleClickEvent(event)
+
 
 class PageEditorDialog(QDialog):
     def __init__(self, data, parent=None, embedded=False):
@@ -157,6 +164,10 @@ class PageEditorDialog(QDialog):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.canvas = EditCanvas(); self.canvas.region_selected.connect(self.pick_region)
         self.canvas.rect_changed.connect(self.set_rect)
+        self.canvas.text_double_clicked.connect(self.direct_pick)
+        self.direct_editor = None
+        self.direct_proxy = None
+        self._direct_sync = False
         panel = QWidget(); panel.setMaximumWidth(395); panel.setMinimumWidth(300)
         controls = QVBoxLayout(panel)
         self.status = QLabel(); self.status.setWordWrap(True); controls.addWidget(self.status)
@@ -199,13 +210,28 @@ class PageEditorDialog(QDialog):
         controls.addStretch()
         hint = QLabel('تجميع الكلمات والفقرات تقديري. يُختار الخط الأصلي إذا كان متاحًا، وإلا يُستخدم بديل. راجع المعاينة قبل التطبيق.')
         hint.setWordWrap(True); controls.addWidget(hint)
-        scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(panel);scroll.setMinimumWidth(330);scroll.setMaximumWidth(415)
-        splitter.addWidget(scroll); splitter.addWidget(self.canvas); splitter.setStretchFactor(1, 1)
+        # Keep the detailed model controls available internally, but expose the
+        # common formatting commands as a compact floating-style bar above the
+        # page. Text itself is edited in place on the PDF canvas.
+        quick = QHBoxLayout()
+        quick.addWidget(QLabel('الخط')); quick.addWidget(self.font, 2)
+        quick.addWidget(QLabel('الحجم')); quick.addWidget(self.size)
+        quick.addWidget(self.bold); quick.addWidget(self.color)
+        quick.addWidget(self.alignment); quick.addWidget(self.auto_fit)
+        quick.addStretch(); quick.addWidget(self.delete_button); quick.addWidget(self.apply_button)
+        layout.addLayout(quick)
+        # Retain non-visual selection/geometry controls as state holders without
+        # showing the former side panel.
+        panel.setParent(self); panel.hide()
+        splitter.addWidget(self.canvas); splitter.setStretchFactor(0, 1)
         layout.addWidget(splitter, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText('إنهاء التعديل')
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء جميع تعديلات الصفحة')
         buttons.accepted.connect(self.finish); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
+        self.font.currentFontChanged.connect(self.update_direct_style)
+        self.size.valueChanged.connect(self.update_direct_style)
+        self.bold.toggled.connect(self.update_direct_style)
         self.reload()
 
     def import_font(self):
@@ -229,6 +255,7 @@ class PageEditorDialog(QDialog):
         self.loading = False
         self.mode = 'select'; self.image = None; self.text.clear(); self.draft = None
         self.canvas.set_page(self.data)
+        self.direct_editor = None; self.direct_proxy = None
         self.status.setText(f'{len(self.entries)} عنصرًا نصيًا أو صورة قابلًا للتحديد' if self.entries else 'لا توجد نصوص أو صور مستقلة قابلة للتعديل. يمكنك إضافة نص أو صورة؛ النص داخل المسح الضوئي يحتاج OCR.')
         self.delete_button.setEnabled(False)
         self.undo_button.setEnabled(bool(self.history)); self.redo_button.setEnabled(bool(self.future))
@@ -308,6 +335,55 @@ class PageEditorDialog(QDialog):
         self.set_rect(bounds)
         self.status.setText(f'تم تحديد {len(selected)} عنصر. الاستبدال أو الحذف يخص العناصر المحددة فقط.')
         self.pending = False
+        if text_entries:
+            self.open_direct_editor()
+
+    def direct_pick(self, point):
+        """Open the text beneath a double click directly on the page."""
+        self.pick_region(QRectF(point, point))
+        if self.selected_entries() and self.selected_entries()[0].kind == 'text':
+            self.open_direct_editor()
+
+    def open_direct_editor(self):
+        """Place an editable 100x100-or-larger box over the selected text."""
+        if not self.selected_entries() and self.mode != 'text':
+            return
+        if self.direct_proxy is not None and self.direct_proxy.scene() is not None:
+            self.canvas.scene().removeItem(self.direct_proxy)
+        rect = self.rect()
+        view_scale = max(.1, self.canvas.transform().m11())
+        rect.setWidth(max(rect.width(), 100 / view_scale))
+        rect.setHeight(max(rect.height(), 100 / view_scale))
+        rect = rect.intersected(QRectF(0, 0, self.width, self.height))
+        self.set_rect(rect)
+        editor = QPlainTextEdit()
+        editor.setPlainText(self.text.toPlainText())
+        editor.setMinimumSize(100, 100)
+        editor.setFrameStyle(0)
+        editor.setStyleSheet('QPlainTextEdit { background: rgba(255,255,255,238); border: 2px solid #c9343e; padding: 5px; selection-background-color: #ef9aa1; }')
+        proxy = self.canvas.scene().addWidget(editor)
+        proxy.setGeometry(rect)
+        proxy.setZValue(20)
+        self.direct_editor, self.direct_proxy = editor, proxy
+        editor.textChanged.connect(self.direct_text_changed)
+        self.update_direct_style()
+        editor.setFocus(); editor.selectAll()
+        self.status.setText('عدّل النص مباشرة داخل المربع الأحمر. يمكن أن يكون النص أطول أو أقصر ثم اضغط «تطبيق على الصفحة».')
+
+    def direct_text_changed(self):
+        if self._direct_sync or self.direct_editor is None:
+            return
+        self._direct_sync = True
+        self.text.setPlainText(self.direct_editor.toPlainText())
+        self._direct_sync = False
+        self.mark_pending()
+
+    def update_direct_style(self, *_):
+        if self.direct_editor is None:
+            return
+        font = QFont(self.font.currentFont())
+        font.setPointSizeF(self.size.value()); font.setBold(self.bold.isChecked())
+        self.direct_editor.setFont(font)
 
     def select_mode(self):
         self.clear_draft(); self.mode = 'select'; self.image = None
@@ -343,7 +419,7 @@ class PageEditorDialog(QDialog):
         self.text.clear(); self.size.setValue(16)
         self.set_rect(QRectF(self.width*.1, self.height*.1, self.width*.7, self.height*.12))
         self.status.setText('نص جديد: ارسم مكانه على الصفحة، واكتب النص ثم عاين التعديل.')
-        self.text.setFocus()
+        self.open_direct_editor()
 
     def choose_image(self):
         path, _ = QFileDialog.getOpenFileName(self, 'إضافة صورة', '', 'صور (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)')
