@@ -1,3 +1,3 @@
-"""Waraq PDF: independent PDF tools. No Adobe code or assets are used."""
+"""VELLORA: independent PDF tools. No Adobe code or assets are used."""
 
-__version__ = "1.9.0"
+__version__ = "2.0.0"

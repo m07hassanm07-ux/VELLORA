@@ -79,7 +79,7 @@ def preflight_pdf(data: bytes, password: str = '') -> PreflightReport:
 def sanitize_pdf(data: bytes, *, remove_metadata: bool = True, remove_attachments: bool = True,
                  remove_javascript: bool = True) -> bytes:
     reader=PdfReader(BytesIO(data),strict=False)
-    if reader.is_encrypted:raise ValueError('احفظ نسخة غير مشفرة أو افتحها داخل ورقة قبل التنظيف.')
+    if reader.is_encrypted:raise ValueError('احفظ نسخة غير مشفرة أو افتحها داخل VELLORA قبل التنظيف.')
     writer=PdfWriter();writer.clone_document_from_reader(reader);root=writer._root_object
     if remove_metadata:
         writer._info=None;root.pop(NameObject('/Metadata'),None)

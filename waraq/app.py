@@ -373,7 +373,7 @@ class MainWindow(QMainWindow):
         self._page_editor=None;self._editing_page=-1
         self.resize(1320, 850)
         self.setMinimumSize(980, 650)
-        self.setWindowTitle("ورقة | Waraqa")
+        self.setWindowTitle("VELLORA | PDF Studio")
         self.setAcceptDrops(True)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.setWindowIcon(self.brand_icon())
@@ -405,10 +405,10 @@ class MainWindow(QMainWindow):
 
     def brand_icon(self):
         root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-        icon = QIcon(str(root / 'waraqa-icon.png'))
+        icon = QIcon(str(root / 'vellora-icon.png'))
         if not icon.isNull():
             return icon
-        return QIcon(str(Path(__file__).resolve().parents[1] / 'assets' / 'waraqa-icon.png'))
+        return QIcon(str(Path(__file__).resolve().parents[1] / 'assets' / 'vellora-icon.png'))
 
     def make_ui(self):
         container = QWidget()
@@ -419,11 +419,11 @@ class MainWindow(QMainWindow):
         header = QFrame(objectName="header")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(22, 12, 22, 12)
-        brand = QLabel("ورقة", objectName="brand")
+        brand = QLabel("VELLORA", objectName="brand")
         brand_column = QVBoxLayout()
         brand_column.setSpacing(1)
         brand_column.addWidget(brand)
-        brand_column.addWidget(QLabel("ملفاتك، مرتّبة على طريقتك", objectName="tagline"))
+        brand_column.addWidget(QLabel("Shape Every Document", objectName="tagline"))
         header_layout.addLayout(brand_column)
         header_layout.addStretch()
         header_layout.addWidget(QLabel("محلي بالكامل  •  مفتوح المصدر", objectName="badge"))
@@ -479,7 +479,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status)
         self.status_label = QLabel("جاهز  •  لا يتم رفع ملفاتك إلى أي خادم")
         status.addWidget(self.status_label, 1)
-        version = QLabel(f"Waraqa  {__version__}")
+        version = QLabel(f"VELLORA  {__version__}")
         version.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         status.addPermanentWidget(version)
 
@@ -619,7 +619,7 @@ class MainWindow(QMainWindow):
         help_menu = menu.addMenu("مساعدة")
         for parent, key, title, shortcut, handler in [
             (files, "open", "فتح مستند…", "Ctrl+O", self.open_dialog),
-            (files, 'openproject', 'فتح مشروع ورقة…', 'Ctrl+Alt+O', self.open_project),
+            (files, 'openproject', 'فتح مشروع VELLORA…', 'Ctrl+Alt+O', self.open_project),
             (files, 'saveproject', 'حفظ مشروع للاستكمال…', 'Ctrl+Shift+S', self.save_project),
             (files, "add", "إضافة ملفات…", "Ctrl+Shift+O", self.add_dialog),
             (files, "merge", "دمج عدة ملفات…", "Ctrl+M", self.merge_dialog),
@@ -669,15 +669,15 @@ class MainWindow(QMainWindow):
             (tools, 'redactsearch', 'تنقيح نص في جميع الصفحات…', '', self.redact_text_everywhere),
             (tools, 'digitalsign', 'توقيع رقمي بشهادة PFX…', '', self.sign_with_certificate),
             (tools, 'verifydigital', 'التحقق من توقيعات ملف…', '', self.verify_signature_file),
-            (tools, 'exportsettings', 'تصدير إعدادات ورقة…', '', self.export_settings),
-            (tools, 'importsettings', 'استيراد إعدادات ورقة…', '', self.import_settings),
+            (tools, 'exportsettings', 'تصدير إعدادات VELLORA…', '', self.export_settings),
+            (tools, 'importsettings', 'استيراد إعدادات VELLORA…', '', self.import_settings),
             (tools, 'redact', 'تنقيح آمن…', 'Ctrl+Alt+D', self.begin_secure_redaction),
             (review,'reviewpanel','لوحة المراجعة…','Ctrl+Alt+R',self.open_review),
             (review,'highlight','تمييز النص المحدد','Ctrl+Shift+H',lambda:self.begin_review('highlight')),
             (review,'note','إضافة ملاحظة','Ctrl+Shift+N',lambda:self.begin_review('note')),
             (review,'arrow','رسم سهم','',lambda:self.begin_review('arrow')),
             (review,'stamp','إضافة ختم','',lambda:self.begin_review('stamp')),
-            (help_menu, "about", "عن ورقة…", "", self.about),
+            (help_menu, "about", "عن VELLORA…", "", self.about),
         ]:
             action = QAction(title, self)
             self.default_shortcuts[key]=shortcut
@@ -708,7 +708,7 @@ class MainWindow(QMainWindow):
         ShortcutDialog(self).exec()
 
     def export_settings(self):
-        path,_=QFileDialog.getSaveFileName(self,'تصدير إعدادات ورقة','Waraqa-settings.json','JSON (*.json)')
+        path,_=QFileDialog.getSaveFileName(self,'تصدير إعدادات VELLORA','Vellora-settings.json','JSON (*.json)')
         if not path:return
         allowed=('ui/','favorites/','shortcuts/','ocr/')
         data={key:self.settings.value(key) for key in self.settings.allKeys() if key.startswith(allowed)}
@@ -716,7 +716,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage('تم تصدير الإعدادات دون مستندات أو كلمات مرور.',10000)
 
     def import_settings(self):
-        path,_=QFileDialog.getOpenFileName(self,'استيراد إعدادات ورقة','','JSON (*.json)')
+        path,_=QFileDialog.getOpenFileName(self,'استيراد إعدادات VELLORA','','JSON (*.json)')
         if not path:return
         try:
             payload=json.loads(Path(path).read_text(encoding='utf-8'))
@@ -884,7 +884,7 @@ class MainWindow(QMainWindow):
 
     def save_project(self):
         if not self.document.pages:return False
-        path,_=QFileDialog.getSaveFileName(self,'حفظ مشروع ورقة',str(self.project_path or 'مشروع.waraq'),'Waraqa project (*.waraq)')
+        path,_=QFileDialog.getSaveFileName(self,'حفظ مشروع VELLORA',str(self.project_path or 'Vellora-project.waraq'),'VELLORA project (*.waraq)')
         if not path:return False
         if not path.lower().endswith('.waraq'):
             path+='.waraq'
@@ -906,7 +906,7 @@ class MainWindow(QMainWindow):
     def open_project(self,path=None):
         if isinstance(path,bool):path=None
         if not path:
-            path,_=QFileDialog.getOpenFileName(self,'فتح مشروع ورقة','','Waraqa project (*.waraq)')
+            path,_=QFileDialog.getOpenFileName(self,'فتح مشروع VELLORA','','VELLORA project (*.waraq)')
         if not path or not self.confirm_discard():return
         try:
             data=Path(path).read_bytes();password=''
@@ -958,7 +958,7 @@ class MainWindow(QMainWindow):
             return
         try:
             if kind=='saved':
-                path,_=QFileDialog.getOpenFileName(self,'إنشاء من قالب محفوظ','','قالب ورقة (*.waraqt)')
+                path,_=QFileDialog.getOpenFileName(self,'إنشاء من قالب محفوظ','','قالب VELLORA (*.waraqt)')
                 if not path:return
                 template_name,data=decode_template(Path(path).read_bytes());source_name=template_name+'.pdf'
             elif kind in ('report','letter','meeting'):
@@ -1100,7 +1100,7 @@ class MainWindow(QMainWindow):
         names = list(dict.fromkeys(self.document.sources[p.source].name for p in self.document.pages))
         title = names[0] if len(names) == 1 else f"مستند مدمج من {len(names)} ملفات" if names else "مساحة العمل"
         self.document_name.setText(title)
-        self.setWindowTitle(f"{'● ' if self.document.dirty else ''}{title} — ورقة")
+        self.setWindowTitle(f"{'● ' if self.document.dirty else ''}{title} — VELLORA")
         self.save_button.setEnabled(bool(count))
         self.print_button.setEnabled(bool(count))
         self.edit_button.setEnabled(bool(count))
@@ -1305,7 +1305,7 @@ class MainWindow(QMainWindow):
     def begin_secure_redaction(self):
         if not self.document.pages:return
         self.image_label.tool='redact';self.image_label.setCursor(Qt.CursorShape.CrossCursor)
-        self.statusBar().showMessage('اسحب مستطيلًا فوق المعلومات الحساسة. سيطلب ورقة تأكيدًا قبل الحذف الدائم.',15000)
+        self.statusBar().showMessage('اسحب مستطيلًا فوق المعلومات الحساسة. سيطلب VELLORA تأكيدًا قبل الحذف الدائم.',15000)
 
     def begin_create_form_field(self):
         if not self.document.pages:return
@@ -1495,7 +1495,7 @@ class MainWindow(QMainWindow):
     def save_current_template(self):
         if not self.document.pages:return
         index=max(0,self.pages.currentRow())
-        path,_=QFileDialog.getSaveFileName(self,'حفظ قالب ورقة','قالب-ورقة.waraqt','قالب ورقة (*.waraqt)')
+        path,_=QFileDialog.getSaveFileName(self,'حفظ قالب VELLORA','Vellora-template.waraqt','قالب VELLORA (*.waraqt)')
         if not path:return
         if not path.lower().endswith('.waraqt'):path += '.waraqt'
         try:
@@ -1508,11 +1508,11 @@ class MainWindow(QMainWindow):
 
     def insert_template(self):
         choices=['تقرير عمل','خطاب رسمي','محضر اجتماع','فتح قالب محفوظ…']
-        choice,ok=QInputDialog.getItem(self,'قوالب ورقة','اختر قالبًا لإضافته كصفحة جديدة:',choices,0,False)
+        choice,ok=QInputDialog.getItem(self,'قوالب VELLORA','اختر قالبًا لإضافته كصفحة جديدة:',choices,0,False)
         if not ok:return
         try:
             if choice=='فتح قالب محفوظ…':
-                path,_=QFileDialog.getOpenFileName(self,'إدراج قالب ورقة','','قالب ورقة (*.waraqt)')
+                path,_=QFileDialog.getOpenFileName(self,'إدراج قالب VELLORA','','قالب VELLORA (*.waraqt)')
                 if not path:return
                 name,data=decode_template(Path(path).read_bytes())
             else:
@@ -1653,7 +1653,7 @@ class MainWindow(QMainWindow):
             for index,signature in enumerate(signatures,1):
                 state='توجد بيانات توقيع' if signature.has_cryptographic_value else 'حقل توقيع فارغ'
                 rows.append(f'{index}. {signature.name} — {state}\nالموقّع: {signature.signer or "غير مذكور"}\nالسبب: {signature.reason or "غير مذكور"}')
-            QMessageBox.information(self,'فحص التوقيعات','\n\n'.join(rows)+'\n\nملاحظة: يعرض ورقة بيانات التوقيع المضمنة، ولا يمنح شهادة ثقة قانونية دون سلسلة شهادات موثوقة.')
+            QMessageBox.information(self,'فحص التوقيعات','\n\n'.join(rows)+'\n\nملاحظة: يعرض VELLORA بيانات التوقيع المضمنة، ولا يمنح شهادة ثقة قانونية دون سلسلة شهادات موثوقة.')
         except JobCancelled:pass
         except Exception as exc:self.error(exc,exc)
 
@@ -1798,7 +1798,7 @@ class MainWindow(QMainWindow):
 
     def sanitize_document(self):
         if not self.document.pages:return
-        if QMessageBox.warning(self,'تنظيف البيانات الخفية','سيزيل ورقة البيانات الوصفية والمرفقات وJavaScript وإجراءات الفتح من النسخة الحالية. احتفظ بالأصل. هل تريد المتابعة؟',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+        if QMessageBox.warning(self,'تنظيف البيانات الخفية','سيزيل VELLORA البيانات الوصفية والمرفقات وJavaScript وإجراءات الفتح من النسخة الحالية. احتفظ بالأصل. هل تريد المتابعة؟',QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
         try:
             result=sanitize_pdf(self.assembled_bytes('تنظيف البيانات الخفية'))
             self.document.replace_document(result,'مستند منظف.pdf');self.refresh(self.pages.currentRow())
@@ -1863,7 +1863,7 @@ class MainWindow(QMainWindow):
             source = self.document.sources[self.document.pages[0].source]
             if source.path:
                 return str(source.path.with_name(f"{source.path.stem}-{suffix}.pdf"))
-        return str(Path.home() / "Documents" / f"Waraq-{suffix}.pdf")
+        return str(Path.home() / "Documents" / f"Vellora-{suffix}.pdf")
 
     def save_document(self, *_):
         if not self.document.pages:
@@ -1881,7 +1881,7 @@ class MainWindow(QMainWindow):
         important=[issue for issue in report.issues if issue.code in ('signatures','javascript','fonts')]
         if not important:return True
         box=QMessageBox(self);box.setIcon(QMessageBox.Icon.Warning);box.setWindowTitle('فحص سريع قبل الحفظ')
-        box.setText('اكتشف ورقة نقاطًا تستحق المراجعة قبل إنشاء النسخة الجديدة.')
+        box.setText('اكتشف VELLORA نقاطًا تستحق المراجعة قبل إنشاء النسخة الجديدة.')
         box.setInformativeText('\n'.join('• '+issue.message for issue in important))
         box.setDetailedText('\n'.join(f'{issue.code}: {issue.message}' for issue in report.issues))
         proceed=box.addButton('متابعة الحفظ',QMessageBox.ButtonRole.AcceptRole)
@@ -1936,7 +1936,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.error(exc,exc);return
         printer=QPrinter(QPrinter.PrinterMode.HighResolution);printer.setResolution(300)
-        printer.setDocName(f"ورقة — طباعة دفعية ({len(paths)} ملفات)");printer.setFromTo(1,count)
+        printer.setDocName(f"VELLORA — طباعة دفعية ({len(paths)} ملفات)");printer.setFromTo(1,count)
         dialog=QPrintDialog(printer,self);dialog.setMinMax(1,count)
         dialog.setOption(QAbstractPrintDialog.PrintDialogOption.PrintPageRange,True)
         if dialog.exec()!=QDialog.DialogCode.Accepted:return
@@ -1966,7 +1966,7 @@ class MainWindow(QMainWindow):
             printer.setResolution(150)
             printer.setDocName(self.document_name.text())
             dialog = QPrintPreviewDialog(printer, self)
-            dialog.setWindowTitle("معاينة الطباعة — ورقة")
+            dialog.setWindowTitle("معاينة الطباعة — VELLORA")
             dialog.resize(1000, 760)
             def paint(target):
                 try:
@@ -2036,7 +2036,7 @@ class MainWindow(QMainWindow):
             with self.busy("جاري تقسيم المستند…"):
                 for start in range(0, len(self.document.pages), size):
                     end = min(start + size, len(self.document.pages))
-                    base = f"Waraq-pages-{start + 1:03d}-{end:03d}"
+                    base = f"Vellora-pages-{start + 1:03d}-{end:03d}"
                     path = Path(folder) / (base + ".pdf")
                     suffix = 2
                     while path.exists():
@@ -2050,7 +2050,7 @@ class MainWindow(QMainWindow):
             self.error(f"توقف التقسيم بعد إنشاء {len(written)} ملف.\n{exc}", exc)
 
     def about(self):
-        QMessageBox.about(self, "عن ورقة", f"<h2>ورقة · {__version__}</h2><p>تطبيق مستقل مفتوح المصدر لإدارة ملفات PDF محليًا.</p><p>كود التطبيق بترخيص MIT. المكتبات وبيانات OCR المرفقة لها تراخيصها الخاصة؛ راجع THIRD_PARTY_NOTICES وملفات التراخيص.</p><p>يدعم التحرير على مستوى الكلمات والفقرات، وOCR عربي/إنجليزي عبر Tesseract محلي، والبحث والنسخ، ومشروعات الاستعادة، وأدوات المراجعة. لا يوفر توقيعًا رقميًا معتمدًا أو إعادة تنسيق المستند مثل برنامج Word.</p><p>ليس تابعًا لـ Adobe، ولا يستخدم كود Acrobat أو أدوات تفعيله.</p>")
+        QMessageBox.about(self, "عن VELLORA", f"<h2>VELLORA · {__version__}</h2><p>Professional PDF Studio — تطبيق مستقل مفتوح المصدر لإدارة ملفات PDF محليًا.</p><p>كود التطبيق بترخيص MIT. المكتبات وبيانات OCR المرفقة لها تراخيصها الخاصة؛ راجع THIRD_PARTY_NOTICES وملفات التراخيص.</p><p>يدعم التحرير المباشر، وOCR عربي/إنجليزي، والبحث والنسخ، ومشروعات الاستعادة، وأدوات المراجعة.</p><p>VELLORA علامة مستقلة، ليست تابعة لـ Adobe ولا تستخدم كود Acrobat أو أدوات تفعيله.</p>")
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -2082,9 +2082,9 @@ def main():
     ensure_font_support()
     from .fonts import load_user_fonts
     load_user_fonts()
-    app.setApplicationName("ورقة")
+    app.setApplicationName("VELLORA")
     app.setApplicationVersion(__version__)
-    app.setOrganizationName("Waraqa")
+    app.setOrganizationName("Vellora")
     app.setStyle("Fusion")
     from .logging_setup import configure_logging
     configure_logging()

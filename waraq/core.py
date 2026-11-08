@@ -329,7 +329,7 @@ class Document:
         if isinstance(header, bytes):
             header = header.decode('ascii')
         writer.pdf_header = max(header, "%PDF-1.7")
-        writer.add_metadata({k: v for k, v in self.metadata.items() if v} | {"/Producer": f"Waraq PDF {__version__}"})
+        writer.add_metadata({k: v for k, v in self.metadata.items() if v} | {"/Producer": f"VELLORA {__version__}"})
         if password:
             flags = UserAccessPermissions(permissions) if permissions is not None else UserAccessPermissions(-4)
             writer.encrypt(password, owner_password or password, permissions_flag=flags, algorithm="AES-256")

@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "waraq-pdf"
-version = "1.9.0"
-description = "An independent, local-first Arabic PDF desktop workspace"
+name = "vellora-pdf"
+version = "2.0.0"
+description = "VELLORA: an independent, local-first professional PDF desktop studio"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [

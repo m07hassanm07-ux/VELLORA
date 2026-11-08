@@ -5,8 +5,8 @@ import os,shutil,subprocess,sys
 root=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(root))
 from waraq import __version__
-distribution=root/'dist'/'Waraqa'
-if not (distribution/'Waraqa.exe').is_file():raise SystemExit('Build the application first.')
+distribution=root/'dist'/'Vellora'
+if not (distribution/'Vellora.exe').is_file():raise SystemExit('Build the application first.')
 for name in ['README.md','LICENSE','THIRD_PARTY_NOTICES.md']:
     shutil.copy2(root/name,distribution/name)
 shutil.copytree(root/'licenses',distribution/'licenses',dirs_exist_ok=True)
@@ -36,6 +36,6 @@ install.append('!macroend');uninstall.append('!macroend')
 manifest.write_text('\n'.join(install+['']+uninstall)+'\n',encoding='utf-8-sig')
 script=generated/'WaraqPDF.nsi'
 script.write_text((root/'installer'/'WaraqPDF.nsi').read_text(encoding='utf-8'),encoding='utf-8-sig')
-out=root/'release'/f'Waraqa-{__version__}-Setup-x64.exe';out.parent.mkdir(exist_ok=True)
+out=root/'release'/f'Vellora-{__version__}-Setup-x64.exe';out.parent.mkdir(exist_ok=True)
 subprocess.run([str(compiler),'/V2',f'/DPROJECT_ROOT={root}',f'/DAPP_VERSION={__version__}',f'/DSETUP_OUTPUT={out}',f'/DGENERATED_FILES={manifest}',str(script)],check=True)
 print(out)

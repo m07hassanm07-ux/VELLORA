@@ -45,7 +45,7 @@ def _visual_ratio(first: Image.Image, second: Image.Image) -> float:
 def compare_pdfs(first: bytes, second: bytes, *, dpi: int = 96, progress=None) -> list[PageComparison]:
     if not 72<=dpi<=150:raise ValueError('دقة المقارنة يجب أن تكون بين 72 و150 DPI.')
     first_reader=PdfReader(BytesIO(first),strict=False);second_reader=PdfReader(BytesIO(second),strict=False)
-    if first_reader.is_encrypted or second_reader.is_encrypted:raise ValueError('افتح المستند المحمي داخل ورقة أولًا قبل المقارنة.')
+    if first_reader.is_encrypted or second_reader.is_encrypted:raise ValueError('افتح المستند المحمي داخل VELLORA أولًا قبل المقارنة.')
     results=[];total=max(len(first_reader.pages),len(second_reader.pages))
     with pdfium.PdfDocument(first) as first_pdf,pdfium.PdfDocument(second) as second_pdf:
         for index in range(total):

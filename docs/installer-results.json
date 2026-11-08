@@ -1,5 +1,5 @@
 {
-  "version": "1.9.0",
+  "version": "2.0.0",
   "silent_test_install": true,
   "installed_executable_self_test": true,
   "uninstall": true,

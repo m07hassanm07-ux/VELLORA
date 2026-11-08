@@ -179,7 +179,7 @@ class PageEditorDialog(QDialog):
         self.embedded = embedded
         if embedded:
             self.setWindowFlags(Qt.WindowType.Widget)
-        self.setWindowTitle('تعديل محتوى الصفحة — ورقة')
+        self.setWindowTitle('تعديل محتوى الصفحة — VELLORA')
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.resize(1180, 820)
         self.data = prepare_page(data)
@@ -294,7 +294,7 @@ class PageEditorDialog(QDialog):
         except Exception as exc:
             QMessageBox.warning(self,'استيراد الخط',str(exc));return
         self.font.setCurrentFont(QFont(families[0]))
-        self.status.setText(f'تم استيراد الخط: {families[0]}. سيظهر بعد إعادة تشغيل ورقة؛ تأكد من امتلاك ترخيص استخدامه وتوزيعه.')
+        self.status.setText(f'تم استيراد الخط: {families[0]}. سيظهر بعد إعادة تشغيل VELLORA؛ تأكد من امتلاك ترخيص استخدامه وتوزيعه.')
 
     def reload(self):
         self.loading = True

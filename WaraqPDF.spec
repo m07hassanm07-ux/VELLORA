@@ -14,7 +14,7 @@ rejected_cas = Path(sys.base_prefix) / 'Lib' / 'codex-rejected-cas.pem'
 if rejected_cas.is_file():
     datas.append((str(rejected_cas), '.'))
 datas.append((str(ROOT / 'assets' / 'ocr'), 'ocr-data'))
-datas.append((str(ROOT / 'assets' / 'waraqa-icon.png'), '.'))
+datas.append((str(ROOT / 'assets' / 'vellora-icon.png'), '.'))
 
 a = Analysis(
     [str(ROOT / 'run.py')],
@@ -32,7 +32,7 @@ a = Analysis(
 if os.name == 'nt':
     a.binaries = [entry for entry in a.binaries if Path(entry[0]).name.lower() not in {'icuuc.dll', 'icuin.dll', 'icudt78.dll'}]
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='Waraqa', debug=False,
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='Vellora', debug=False,
           bootloader_ignore_signals=False, strip=False, upx=False, console=False,
-          disable_windowed_traceback=False, icon=str(ROOT / 'assets' / 'waraq.ico') if (ROOT / 'assets' / 'waraq.ico').exists() else None)
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='Waraqa')
+          disable_windowed_traceback=False, icon=str(ROOT / 'assets' / 'vellora.ico') if (ROOT / 'assets' / 'vellora.ico').exists() else None)
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='Vellora')

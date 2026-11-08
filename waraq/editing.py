@@ -225,7 +225,7 @@ def _layer(width, height, rect, *, text=None, image=None, size=16, family='Segoe
     writer = QPdfWriter(buffer); writer.setResolution(72)
     writer.setPageSize(QPageSize(QSizeF(width, height), QPageSize.Unit.Point))
     writer.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Point)
-    writer.setCreator('Waraq PDF page editor')
+    writer.setCreator('VELLORA PDF editor')
     painter = QPainter(writer)
     try:
         if not painter.isActive():

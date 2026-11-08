@@ -13,7 +13,7 @@ def data_directory() -> Path:
     if override:
         return Path(override)
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    return base / "Waraqa"
+    return base / "Vellora"
 
 
 def configure_logging() -> Path:
@@ -30,5 +30,5 @@ def configure_logging() -> Path:
         logger.critical("Unhandled application error", exc_info=(kind, value, trace))
         previous(kind, value, trace)
     sys.excepthook = unhandled
-    logger.info("Waraqa started")
+    logger.info("VELLORA started")
     return path

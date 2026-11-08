@@ -34,7 +34,7 @@ def text_overlay(width: float, height: float, overlay: Overlay) -> bytes:
     pdf.setResolution(72)
     pdf.setPageSize(QPageSize(QSizeF(width, height), QPageSize.Unit.Point))
     pdf.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Point)
-    pdf.setCreator("Waraq PDF")
+    pdf.setCreator("VELLORA")
     painter = QPainter(pdf)
     try:
         if not painter.isActive():
