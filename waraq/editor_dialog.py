@@ -19,6 +19,7 @@ class EditCanvas(QGraphicsView):
     region_selected = Signal(QRectF)
     rect_changed = Signal(QRectF)
     text_double_clicked = Signal(QPointF)
+    delete_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -34,6 +35,7 @@ class EditCanvas(QGraphicsView):
         self.drag_mode = None
         self.drag_origin = None
         self.drag_rect = None
+        self.guide_items = []
 
     def set_page(self, data):
         with pdfium.PdfDocument(data) as pdf:
@@ -44,7 +46,7 @@ class EditCanvas(QGraphicsView):
                 page.close()
             scale = min(1.5, 1500/max(width, height))
             image = render_image(pdf, 0, scale)
-        self.scene().clear(); self.selection = None; self.handles = []
+        self.scene().clear(); self.selection = None; self.handles = []; self.guide_items = []
         item = self.scene().addPixmap(QPixmap.fromImage(image)); item.setScale(1/scale)
         self.scene().setSceneRect(0, 0, width, height)
         self.fit_page_width()
@@ -72,6 +74,27 @@ class EditCanvas(QGraphicsView):
             for point in points:
                 self.handles.append(self.scene().addEllipse(point.x()-radius,point.y()-radius,radius*2,radius*2,
                     QPen(QColor('#087a63'),0),QColor('white')))
+
+    def clear_guides(self):
+        for item in self.guide_items:
+            if item.scene() is not None:self.scene().removeItem(item)
+        self.guide_items=[]
+
+    def snap_rect(self, rect):
+        """Snap edges and centres to the page with temporary alignment guides."""
+        self.clear_guides()
+        threshold=max(2,7/self.transform().m11());page=self.sceneRect();pen=QPen(QColor('#e0404b'),0,Qt.PenStyle.DashLine)
+        x_targets=[page.left(),page.center().x(),page.right()]
+        x_values=[rect.left(),rect.center().x(),rect.right()]
+        best=min(((abs(value-target),target-value,target) for value in x_values for target in x_targets),key=lambda item:item[0])
+        if best[0]<=threshold:
+            rect.translate(best[1],0);self.guide_items.append(self.scene().addLine(best[2],page.top(),best[2],page.bottom(),pen))
+        y_targets=[page.top(),page.center().y(),page.bottom()]
+        y_values=[rect.top(),rect.center().y(),rect.bottom()]
+        best=min(((abs(value-target),target-value,target) for value in y_values for target in y_targets),key=lambda item:item[0])
+        if best[0]<=threshold:
+            rect.translate(0,best[1]);self.guide_items.append(self.scene().addLine(page.left(),best[2],page.right(),best[2],pen))
+        return rect
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -101,6 +124,7 @@ class EditCanvas(QGraphicsView):
                 if rect.top()<0:rect.moveTop(0)
                 if rect.right()>self.sceneRect().right():rect.moveRight(self.sceneRect().right())
                 if rect.bottom()>self.sceneRect().bottom():rect.moveBottom(self.sceneRect().bottom())
+                rect=self.snap_rect(rect)
             else:
                 index=self.drag_mode[1]
                 if index==0:rect.setTopLeft(point)
@@ -119,6 +143,7 @@ class EditCanvas(QGraphicsView):
         if self.drag_mode is not None and event.button()==Qt.MouseButton.LeftButton:
             rect=QRectF(self.selection.rect()) if self.selection is not None else QRectF()
             self.drag_mode=None;self.drag_origin=None;self.drag_rect=None
+            self.clear_guides()
             if rect.width()>=3 and rect.height()>=3:self.rect_changed.emit(rect)
             event.accept();return
         if self.start is not None and event.button() == Qt.MouseButton.LeftButton:
@@ -126,6 +151,17 @@ class EditCanvas(QGraphicsView):
             self.start = None
             self.region_selected.emit(rect); event.accept(); return
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if self.selection is not None and event.key() in (Qt.Key.Key_Left,Qt.Key.Key_Right,Qt.Key.Key_Up,Qt.Key.Key_Down):
+            step=10 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
+            dx=(-step if event.key()==Qt.Key.Key_Left else step if event.key()==Qt.Key.Key_Right else 0)
+            dy=(-step if event.key()==Qt.Key.Key_Up else step if event.key()==Qt.Key.Key_Down else 0)
+            rect=self.selection.rect().translated(dx,dy).intersected(self.sceneRect())
+            self.highlight(rect);self.rect_changed.emit(rect);event.accept();return
+        if self.selection is not None and event.key()==Qt.Key.Key_Delete:
+            self.delete_requested.emit();event.accept();return
+        super().keyPressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -156,7 +192,8 @@ class PageEditorDialog(QDialog):
         note = QLabel('حرّر النص والصور مباشرة داخل الصفحة؛ انقر العنصر أو اسحب حوله ثم استخدم لوحة الخصائص.')
         note.setWordWrap(True); layout.addWidget(note)
         toolbar = QHBoxLayout()
-        for label, callback in [('تحديد عنصر', self.select_mode), ('نص جديد', self.new_text), ('إضافة صورة…', self.choose_image), ('إدراج جدول…', self.new_table)]:
+        for label, callback in [('تحديد عنصر', self.select_mode), ('نص جديد', self.new_text), ('إضافة صورة…', self.choose_image),
+                                ('استبدال الصورة…', self.replace_selected_image), ('إدراج جدول…', self.new_table)]:
             button = QPushButton(label); button.clicked.connect(callback); toolbar.addWidget(button)
         self.undo_button = QPushButton('تراجع'); self.undo_button.clicked.connect(self.undo); toolbar.addWidget(self.undo_button)
         self.redo_button = QPushButton('إعادة'); self.redo_button.clicked.connect(self.redo); toolbar.addWidget(self.redo_button)
@@ -165,6 +202,7 @@ class PageEditorDialog(QDialog):
         self.canvas = EditCanvas(); self.canvas.region_selected.connect(self.pick_region)
         self.canvas.rect_changed.connect(self.set_rect)
         self.canvas.text_double_clicked.connect(self.direct_pick)
+        self.canvas.delete_requested.connect(self.delete_selected)
         self.direct_editor = None
         self.direct_proxy = None
         self.direct_toolbar_proxy = None
@@ -377,6 +415,16 @@ class PageEditorDialog(QDialog):
         floating = QWidget()
         floating.setStyleSheet('QWidget { background: #24323d; color: white; } QPushButton { min-height: 24px; padding: 3px 10px; }')
         floating_layout = QHBoxLayout(floating); floating_layout.setContentsMargins(4, 3, 4, 3); floating_layout.setSpacing(4)
+        mini_font = QFontComboBox(); mini_font.setCurrentFont(self.font.currentFont()); mini_font.setMaximumWidth(145)
+        mini_font.setToolTip('الخط'); mini_font.currentFontChanged.connect(self.font.setCurrentFont); floating_layout.addWidget(mini_font)
+        mini_size = QDoubleSpinBox(); mini_size.setRange(4,200); mini_size.setValue(self.size.value()); mini_size.setMaximumWidth(65)
+        mini_size.setToolTip('حجم الخط'); mini_size.valueChanged.connect(self.size.setValue); floating_layout.addWidget(mini_size)
+        mini_bold = QPushButton('B'); mini_bold.setCheckable(True); mini_bold.setChecked(self.bold.isChecked()); mini_bold.setMaximumWidth(36)
+        mini_bold.setToolTip('خط عريض'); mini_bold.toggled.connect(self.bold.setChecked); floating_layout.addWidget(mini_bold)
+        mini_align = QComboBox(); mini_align.addItem('يمين','right'); mini_align.addItem('وسط','center'); mini_align.addItem('يسار','left')
+        mini_align.setCurrentIndex(max(0,mini_align.findData(self.alignment.currentData())));mini_align.setToolTip('المحاذاة')
+        mini_align.currentIndexChanged.connect(lambda *_:self.alignment.setCurrentIndex(max(0,self.alignment.findData(mini_align.currentData()))))
+        floating_layout.addWidget(mini_align)
         save = QPushButton('✓ تطبيق'); save.clicked.connect(self.apply_change); floating_layout.addWidget(save)
         cancel = QPushButton('إلغاء'); cancel.clicked.connect(self.discard_direct_edit); floating_layout.addWidget(cancel)
         toolbar_proxy = self.canvas.scene().addWidget(floating); toolbar_proxy.setZValue(21)
@@ -471,6 +519,17 @@ class PageEditorDialog(QDialog):
         self.set_rect(QRectF(self.width*.1, self.height*.1, self.width*.4, self.height*.3))
         self.status.setText(f'الصورة: {Path(path).name}. ارسم مكانها ثم عاين التعديل؛ ستُحفظ نسبة أبعادها.')
 
+    def replace_selected_image(self):
+        selected=self.selected_entries()
+        if len(selected)!=1 or selected[0].kind!='image':
+            QMessageBox.information(self,'استبدال الصورة','حدد صورة واحدة داخل الصفحة أولًا.');return
+        path,_=QFileDialog.getOpenFileName(self,'استبدال الصورة','', 'صور (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)')
+        if not path:return
+        reader=QImageReader(path);reader.setAutoTransform(True);image=reader.read()
+        if image.isNull():QMessageBox.warning(self,'الصورة','تعذر قراءة الصورة.');return
+        self.clear_draft();self.mode='replace_image';self.image=image
+        self.status.setText('تم اختيار الصورة البديلة. حرّك الإطار أو غيّر حجمه ثم اضغط «تطبيق على الصفحة».')
+
     def new_table(self):
         raw,ok=QInputDialog.getMultiLineText(self,'إدراج أو تحرير جدول','اكتب صفوف الجدول؛ افصل الخلايا بزر Tab. يمكنك إضافة الأسطر أو حذفها وإعادة ترتيبها:','العنوان 1\tالعنوان 2\nقيمة 1\tقيمة 2')
         if not ok:return
@@ -484,14 +543,14 @@ class PageEditorDialog(QDialog):
         if self.mode=='table':
             rect=self.rect();return insert_table(self.data,(rect.x(),rect.y(),rect.width(),rect.height()),self.table_rows,
                 family=self.font.currentFont().family(),size=self.size.value(),rtl=True)
-        indexes = self.selected_indexes() if self.mode == 'select' else []
+        indexes = self.selected_indexes() if self.mode in ('select','replace_image') else []
         if self.mode == 'select' and not indexes:
             raise ValueError('حدد نصًا لتعديله، أو اختر «نص جديد» أو «إضافة صورة».')
         if self.mode == 'select' and any(e.kind != 'text' for e in self.selected_entries()):
             raise ValueError('لتغيير الصورة احذفها ثم أضف الصورة الجديدة. استبدال النص يتطلب تحديد نصوص فقط.')
         rect = self.rect()
-        return edit_page(self.data, indexes, text=None if self.mode == 'image' else self.text.toPlainText(),
-            image=self.image if self.mode == 'image' else None,
+        return edit_page(self.data, indexes, text=None if self.mode in ('image','replace_image') else self.text.toPlainText(),
+            image=self.image if self.mode in ('image','replace_image') else None,
             rect=(rect.x(), rect.y(), rect.width(), rect.height()), size=self.size.value(),
             family=self.font.currentFont().family(), color=self.color.currentData(), bold=self.bold.isChecked(),
             alignment=self.alignment.currentData(), selected_chars=self.selected_chars() if self.mode == 'select' else None,
