@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QImageReader, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QImageReader, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout,
     QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QInputDialog,
@@ -167,6 +167,7 @@ class PageEditorDialog(QDialog):
         self.canvas.text_double_clicked.connect(self.direct_pick)
         self.direct_editor = None
         self.direct_proxy = None
+        self.direct_toolbar_proxy = None
         self._direct_sync = False
         panel = QWidget(); panel.setMaximumWidth(395); panel.setMinimumWidth(300)
         controls = QVBoxLayout(panel)
@@ -232,6 +233,13 @@ class PageEditorDialog(QDialog):
         self.font.currentFontChanged.connect(self.update_direct_style)
         self.size.valueChanged.connect(self.update_direct_style)
         self.bold.toggled.connect(self.update_direct_style)
+        self.shortcuts = []
+        for keys, callback in [('Ctrl+Return', self.apply_change), ('Ctrl+Enter', self.apply_change),
+                               ('Ctrl+Z', self.undo), ('Ctrl+Shift+Z', self.redo),
+                               ('Ctrl+Y', self.redo), ('Escape', self.discard_direct_edit)]:
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(callback); self.shortcuts.append(shortcut)
         self.reload()
 
     def import_font(self):
@@ -255,7 +263,7 @@ class PageEditorDialog(QDialog):
         self.loading = False
         self.mode = 'select'; self.image = None; self.text.clear(); self.draft = None
         self.canvas.set_page(self.data)
-        self.direct_editor = None; self.direct_proxy = None
+        self.direct_editor = None; self.direct_proxy = None; self.direct_toolbar_proxy = None
         self.status.setText(f'{len(self.entries)} عنصرًا نصيًا أو صورة قابلًا للتحديد' if self.entries else 'لا توجد نصوص أو صور مستقلة قابلة للتعديل. يمكنك إضافة نص أو صورة؛ النص داخل المسح الضوئي يحتاج OCR.')
         self.delete_button.setEnabled(False)
         self.undo_button.setEnabled(bool(self.history)); self.redo_button.setEnabled(bool(self.future))
@@ -366,8 +374,19 @@ class PageEditorDialog(QDialog):
         editor.textChanged.connect(self.direct_text_changed)
         editor.document().documentLayout().documentSizeChanged.connect(self.grow_direct_editor)
         self.update_direct_style()
+        floating = QWidget()
+        floating.setStyleSheet('QWidget { background: #24323d; color: white; } QPushButton { min-height: 24px; padding: 3px 10px; }')
+        floating_layout = QHBoxLayout(floating); floating_layout.setContentsMargins(4, 3, 4, 3); floating_layout.setSpacing(4)
+        save = QPushButton('✓ تطبيق'); save.clicked.connect(self.apply_change); floating_layout.addWidget(save)
+        cancel = QPushButton('إلغاء'); cancel.clicked.connect(self.discard_direct_edit); floating_layout.addWidget(cancel)
+        toolbar_proxy = self.canvas.scene().addWidget(floating); toolbar_proxy.setZValue(21)
+        floating.adjustSize()
+        toolbar_y = rect.top() - floating.sizeHint().height() - 4
+        if toolbar_y < 0: toolbar_y = rect.bottom() + 4
+        toolbar_proxy.setPos(rect.left(), toolbar_y)
+        self.direct_toolbar_proxy = toolbar_proxy
         editor.setFocus(); editor.selectAll()
-        self.status.setText('عدّل النص مباشرة داخل المربع الأحمر. يمكن أن يكون النص أطول أو أقصر ثم اضغط «تطبيق على الصفحة».')
+        self.status.setText('عدّل النص في مكانه. انقر خارج المربع للحفظ تلقائيًا، أو استخدم Ctrl+Enter للتطبيق وEsc للإلغاء.')
 
     def direct_text_changed(self):
         if self._direct_sync or self.direct_editor is None:
@@ -394,11 +413,21 @@ class PageEditorDialog(QDialog):
         font.setPointSizeF(self.size.value()); font.setBold(self.bold.isChecked())
         self.direct_editor.setFont(font)
 
+    def discard_direct_edit(self):
+        if self.direct_editor is not None:
+            self.reload()
+
     def select_mode(self):
         self.clear_draft(); self.mode = 'select'; self.image = None
         self.status.setText('انقر عنصرًا، أو اسحب مستطيلًا حول النص لتحديد عدة عناصر.')
 
     def pick_region(self, rect):
+        if (self.direct_proxy is not None and self.pending
+                and not self.direct_proxy.geometry().contains(rect.center())):
+            try:
+                self.commit(self.draft if self.draft is not None else self.make_change())
+            except Exception as exc:
+                QMessageBox.warning(self, 'تعذر التعديل', str(exc)); return
         self.clear_draft()
         if self.mode in ('text', 'image', 'table'):
             if rect.width() < 3 or rect.height() < 3:
