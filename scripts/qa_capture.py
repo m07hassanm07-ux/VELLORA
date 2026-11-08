@@ -20,7 +20,7 @@ window=MainWindow();window.show()
 def wait_render():
     loop=QEventLoop();QTimer.singleShot(650,loop.quit);loop.exec()
 wait_render();window.grab().save(str(out/'welcome.png'))
-window.import_paths([str(root/'examples'/'welcome.pdf')]);wait_render()
+window.document.import_bytes('welcome.pdf',(root/'examples'/'welcome.pdf').read_bytes());window.refresh();wait_render()
 window.render_current();window.grab().save(str(out/'workspace.png'))
 window.document.add_overlay([0],Overlay('نسخة للمراجعة','center',34,'#b33e46',0.55))
 window.document.add_overlay(list(range(3)),Overlay('',numbering=True))

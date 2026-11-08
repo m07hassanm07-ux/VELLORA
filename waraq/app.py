@@ -16,7 +16,7 @@ from PySide6.QtPrintSupport import QPrinter, QPrintDialog, QPrintPreviewDialog, 
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
-    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QGridLayout,
     QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QStatusBar,
     QToolBar, QVBoxLayout, QWidget, QStyledItemDelegate, QStyle, QProgressDialog, QDockWidget,
@@ -51,52 +51,71 @@ from .shortcuts import validate_shortcut_map
 
 STYLE = """
 * { font-family: 'Segoe UI'; font-size: 10pt; }
-QMainWindow, QDialog { background: #f4f7fa; color: #152c3b; }
-QMenuBar, QMenu { background: #ffffff; color: #152c3b; }
-QMenu::item:selected { background: #dff4ef; }
-QFrame#header { background: #ffffff; border-bottom: 1px solid #dce5ec; }
-QLabel#brand { font-size: 22pt; font-weight: 750; color: #123b48; }
-QLabel#tagline, QLabel#subtle { color: #647989; }
-QLabel#section { color: #274656; font-weight: 650; font-size: 11pt; }
-QLabel#badge { background: #e0f4ee; color: #166950; padding: 6px 12px; border-radius: 12px; }
-QFrame#tools { background: #ffffff; border-bottom: 1px solid #dce5ec; }
-QPushButton { background: #ffffff; color: #234553; border: 1px solid #d5e1e8; border-radius: 8px; padding: 8px 13px; min-height: 19px; }
-QPushButton:hover { background: #edf6f4; border-color: #81b5aa; }
-QPushButton:pressed { background: #d8eee8; }
-QPushButton:disabled { color: #a3afb6; background: #f5f7f9; border-color: #e2e8ed; }
-QPushButton#primary { background: #157b67; border-color: #157b67; color: white; font-weight: 650; }
-QPushButton#primary:hover { background: #106451; }
-QPushButton#primary:disabled { background: #a3c5bd; border-color: #a3c5bd; color: white; }
+QMainWindow, QDialog { background: #f3f4f6; color: #1f2937; }
+QMenuBar { background: #202832; color: #f7f8fa; padding: 2px 10px; spacing: 5px; }
+QMenuBar::item { padding: 7px 10px; border-radius: 5px; }
+QMenuBar::item:selected { background: #374151; }
+QMenu { background: #ffffff; color: #1f2937; border: 1px solid #d1d5db; padding: 6px; }
+QMenu::item { padding: 7px 26px; border-radius: 4px; }
+QMenu::item:selected { background: #feecee; color: #9f2530; }
+QMenu::separator { height: 1px; background: #e5e7eb; margin: 5px 8px; }
+QFrame#header { background: #27313d; border: none; }
+QLabel#brand { font-size: 22pt; font-weight: 750; color: #ffffff; }
+QLabel#tagline { color: #bdc7d3; font-size: 9pt; }
+QLabel#subtle { color: #6b7280; }
+QLabel#section { color: #263445; font-weight: 700; font-size: 11pt; }
+QLabel#badge { background: #354252; color: #d9e1ea; padding: 6px 12px; border: 1px solid #48586a; border-radius: 11px; }
+QFrame#tools { background: #ffffff; border-bottom: 1px solid #d8dde4; }
+QFrame#toolGroup { background: transparent; border-left: 1px solid #e5e7eb; }
+QLabel#toolGroupTitle { color: #7a8491; font-size: 8pt; font-weight: 600; }
+QPushButton { background: #ffffff; color: #344153; border: 1px solid #d7dce3; border-radius: 6px; padding: 7px 12px; min-height: 19px; }
+QPushButton:hover { background: #f8e9eb; border-color: #d8656c; color: #9d2831; }
+QPushButton:pressed { background: #f4d7da; }
+QPushButton:disabled { color: #aeb5bf; background: #f6f7f9; border-color: #e7e9ed; }
+QPushButton#primary { background: #c9343e; border-color: #c9343e; color: white; font-weight: 700; }
+QPushButton#primary:hover { background: #ac2832; border-color: #ac2832; color: white; }
+QPushButton#primary:disabled { background: #dca5aa; border-color: #dca5aa; color: white; }
+QPushButton#headerAction { background: #344151; color: #f7f8fa; border-color: #526174; }
+QPushButton#headerAction:hover { background: #46576a; color: white; border-color: #718198; }
+QPushButton#toolButton { border: none; background: transparent; min-width: 72px; padding: 8px 10px; }
+QPushButton#toolButton:hover { background: #f8e9eb; color: #a52c35; }
 QPushButton#danger { color: #b33e46; }
 QPushButton#ghost { background: transparent; border: none; color: #416370; }
-QFrame#sidebar { background: #ffffff; border-left: 1px solid #dce5ec; }
+QFrame#sidebar { background: #ffffff; border-left: 1px solid #d8dde4; }
 QListWidget { background: #f8fafc; border: none; outline: none; padding: 8px; }
-QListWidget::item { border: 1px solid #dfe7ed; border-radius: 9px; margin: 5px 2px; padding: 9px; color: #3a5665; background: white; }
-QListWidget::item:selected { background: #e5f5ef; border: 2px solid #24977c; color: #124f40; }
-QListWidget::item:hover { border-color: #76b7a6; }
-QScrollArea { border: none; background: #dfe7ed; }
-QWidget#previewSurface { background: #dfe7ed; }
-QLabel#pageImage { background: white; border: 1px solid #c7d2da; }
-QFrame#viewerBar { background: #f9fbfc; border-bottom: 1px solid #dce5ec; }
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background: white; color: #152c3b; border: 1px solid #cfdae2; border-radius: 6px; padding: 6px; min-height: 20px; }
-QStatusBar { background: #ffffff; border-top: 1px solid #dce5ec; color: #5b7382; }
-QLabel#emptyTitle { font-size: 30pt; font-weight: 750; color: #173d4c; }
-QLabel#emptyText { font-size: 12pt; color: #67808f; }
-QLabel#emptyMark { font-size: 54pt; font-weight: 750; background: #dff2ec; color: #167761; border-radius: 22px; }
-QSplitter::handle { background: #dce5ec; width: 1px; }
-QToolTip { background: #173d4c; color: white; border: none; padding: 5px; }
+QListWidget::item { border: 1px solid #dfe3e8; border-radius: 7px; margin: 5px 2px; padding: 9px; color: #374151; background: white; }
+QListWidget::item:selected { background: #fff0f1; border: 2px solid #cc3b45; color: #8f232c; }
+QListWidget::item:hover { border-color: #d1787e; }
+QScrollArea { border: none; background: #e3e5e8; }
+QWidget#previewSurface { background: #e3e5e8; }
+QLabel#pageImage { background: white; border: 1px solid #bfc5cd; }
+QFrame#viewerBar { background: #ffffff; border-bottom: 1px solid #d8dde4; }
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background: white; color: #1f2937; border: 1px solid #cfd5dd; border-radius: 5px; padding: 6px; min-height: 20px; }
+QStatusBar { background: #ffffff; border-top: 1px solid #d8dde4; color: #647184; }
+QFrame#emptyCard { background: #ffffff; border: 1px solid #d9dee5; border-radius: 14px; }
+QLabel#emptyTitle { font-size: 27pt; font-weight: 750; color: #202b38; }
+QLabel#emptyText { font-size: 11pt; color: #687586; }
+QLabel#emptyMark { font-size: 46pt; font-weight: 750; background: #c9343e; color: white; border-radius: 18px; }
+QLabel#startTitle { font-size: 11pt; font-weight: 700; color: #263445; }
+QLabel#startHint { font-size: 9pt; color: #7b8795; }
+QSplitter::handle { background: #d8dde4; width: 1px; }
+QToolTip { background: #202832; color: white; border: none; padding: 5px; }
 """
 
 DARK_STYLE = """
 QMainWindow, QDialog { background: #17232b; color: #e8f0f4; }
 QMenuBar, QMenu, QFrame#header, QFrame#tools, QFrame#sidebar, QStatusBar { background: #1d2c35; color: #e8f0f4; border-color: #38505d; }
-QLabel#brand { color: #7ed8c0; } QLabel#tagline, QLabel#subtle { color: #aec0ca; }
+QLabel#brand { color: #ffffff; } QLabel#tagline, QLabel#subtle { color: #aec0ca; }
 QLabel#badge { background: #24463e; color: #9ae2cf; }
 QPushButton { background: #263944; color: #e8f0f4; border-color: #49616e; }
 QPushButton:hover { background: #31505a; } QPushButton:disabled { color: #70828b; background: #202e36; }
+QPushButton#primary { background: #c9343e; border-color: #c9343e; color: white; }
+QPushButton#headerAction { background: #344553; color: white; }
+QFrame#emptyCard { background: #1d2c35; border-color: #3b505e; }
+QLabel#emptyTitle, QLabel#startTitle { color: #eef4f7; }
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QListWidget { background: #21323c; color: #edf4f7; border-color: #48606c; }
 QListWidget::item { background: #263944; color: #dce8ed; border-color: #415963; }
-QListWidget::item:selected { background: #245c50; color: white; border-color: #62c6ad; }
+QListWidget::item:selected { background: #5a2d33; color: white; border-color: #df6b74; }
 QWidget#previewSurface, QScrollArea { background: #10191f; }
 QLabel#pageImage { background: white; }
 """
@@ -108,13 +127,13 @@ class PageDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = option.rect.adjusted(4, 4, -4, -4)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        painter.setBrush(QColor("#e5f5ef" if selected else "#ffffff"))
-        painter.setPen(QColor("#24977c" if selected else "#dfe7ed"))
+        painter.setBrush(QColor("#fff0f1" if selected else "#ffffff"))
+        painter.setPen(QColor("#cc3b45" if selected else "#dfe7ed"))
         painter.drawRoundedRect(rect, 9, 9)
         icon = index.data(Qt.ItemDataRole.DecorationRole)
         if isinstance(icon, QIcon):
             icon.paint(painter, QRect(rect.center().x() - 64, rect.top() + 9, 128, 166), Qt.AlignmentFlag.AlignCenter)
-        painter.setPen(QColor("#124f40" if selected else "#3a5665"))
+        painter.setPen(QColor("#8f232c" if selected else "#3a5665"))
         text = str(index.data(Qt.ItemDataRole.DisplayRole) or "").split("\n")
         painter.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
         painter.drawText(QRect(rect.left() + 5, rect.top() + 177, rect.width() - 10, 20), Qt.AlignmentFlag.AlignCenter, text[0])
@@ -368,7 +387,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         header = QFrame(objectName="header")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(24, 16, 24, 16)
+        header_layout.setContentsMargins(22, 12, 22, 12)
         brand = QLabel("ورقة", objectName="brand")
         brand_column = QVBoxLayout()
         brand_column.setSpacing(1)
@@ -380,11 +399,13 @@ class MainWindow(QMainWindow):
         open_button = self.button("فتح PDF", self.open_dialog, primary=True)
         open_button.setToolTip("فتح مستند جديد · Ctrl+O")
         header_layout.addWidget(open_button)
-        header_layout.addWidget(self.button("إنشاء PDF", self.create_pdf_dialog))
+        create_button=self.button("إنشاء PDF", self.create_pdf_dialog);create_button.setObjectName('headerAction');header_layout.addWidget(create_button)
         self.edit_button = self.button("تعديل PDF", self.edit_page_content)
+        self.edit_button.setObjectName('headerAction')
         self.edit_button.setToolTip("تعديل نص الصفحة وإضافة النصوص والصور · Ctrl+Shift+E")
         header_layout.addWidget(self.edit_button)
         self.print_button = self.button("طباعة", self.print_document)
+        self.print_button.setObjectName('headerAction')
         self.print_button.setToolTip("الطباعة عبر طابعات Windows · Ctrl+P")
         header_layout.addWidget(self.print_button)
         self.save_button = self.button("حفظ نسخة", self.save_document, primary=True)
@@ -393,21 +414,21 @@ class MainWindow(QMainWindow):
 
         tools = QFrame(objectName="tools")
         tool_layout = QHBoxLayout(tools)
-        tool_layout.setContentsMargins(18, 10, 18, 10)
-        for key, title, handler in [
-            ("add", "دمج ملفات", self.merge_dialog),
-            ("extract", "استخراج صفحات", self.extract_pages),
-            ("split", "تقسيم", self.split_document),
-            ("text", "نص / علامة مائية", self.add_text),
-            ("number", "ترقيم الصفحات", self.add_numbers),
-            ("web", "صفحة ويب", self.import_web),
-            ("templates", "قوالب", self.insert_template),
-        ]:
-            self.buttons[key] = self.button(title, handler)
-            tool_layout.addWidget(self.buttons[key])
+        tool_layout.setContentsMargins(16, 5, 16, 5);tool_layout.setSpacing(4)
+        groups=[('تنظيم الصفحات',[("add","دمج ملفات",self.merge_dialog),("extract","استخراج",self.extract_pages),("split","تقسيم",self.split_document)]),
+                ('تحرير المحتوى',[("text","نص وعلامة مائية",self.add_text),("number","ترقيم",self.add_numbers),("templates","قوالب",self.insert_template)]),
+                ('إنشاء واستيراد',[("web","صفحة ويب",self.import_web)])]
+        for group_title,items in groups:
+            group=QFrame(objectName='toolGroup');column=QVBoxLayout(group);column.setContentsMargins(8,2,8,2);column.setSpacing(1)
+            row=QHBoxLayout();row.setSpacing(2)
+            for key,title,handler in items:
+                self.buttons[key]=self.button(title,handler);self.buttons[key].setObjectName('toolButton');row.addWidget(self.buttons[key])
+            column.addLayout(row);label=QLabel(group_title,objectName='toolGroupTitle');label.setAlignment(Qt.AlignmentFlag.AlignCenter);column.addWidget(label)
+            tool_layout.addWidget(group)
         tool_layout.addStretch()
         self.undo_button = self.button("تراجع", self.undo)
         self.redo_button = self.button("إعادة", self.redo)
+        self.undo_button.setObjectName('toolButton');self.redo_button.setObjectName('toolButton')
         tool_layout.addWidget(self.undo_button)
         tool_layout.addWidget(self.redo_button)
         layout.addWidget(tools)
@@ -443,27 +464,30 @@ class MainWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(18)
+        layout.setContentsMargins(28,28,28,28)
+        card=QFrame(objectName='emptyCard');card.setMaximumWidth(820);card_layout=QVBoxLayout(card);card_layout.setContentsMargins(52,34,52,38);card_layout.setSpacing(14)
         mark = QLabel("و", objectName="emptyMark")
-        mark.setFixedSize(108, 108)
+        mark.setFixedSize(86, 86)
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(mark, 0, Qt.AlignmentFlag.AlignHCenter)
-        title = QLabel("مساحة أهدأ لملفات PDF", objectName="emptyTitle")
+        card_layout.addWidget(mark, 0, Qt.AlignmentFlag.AlignHCenter)
+        title = QLabel("ابدأ العمل على ملفات PDF", objectName="emptyTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
-        text = QLabel("اعرض صفحاتك، رتّبها، واجمعها في نسخة جديدة.\nكل العمل يتم على جهازك.", objectName="emptyText")
+        card_layout.addWidget(title)
+        text = QLabel("افتح مستندًا، أنشئ ملفًا جديدًا، أو اجمع عدة ملفات في مساحة عمل واحدة.\nتظل مستنداتك محلية على هذا الجهاز.", objectName="emptyText")
         text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        text.setStyleSheet("line-height: 1.6;")
-        layout.addWidget(text)
-        open_button = self.button("اختيار ملفات PDF", self.open_dialog, primary=True)
-        open_button.setFixedWidth(240)
-        layout.addWidget(open_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        card_layout.addWidget(text)
+        actions=QGridLayout();actions.setHorizontalSpacing(10);actions.setVerticalSpacing(5)
+        start_items=[('فتح ملف PDF','اختيار مستند من الجهاز',self.open_dialog,True),('إنشاء PDF','من صورة أو ملف Office',self.create_pdf_dialog,False),('دمج ملفات','ترتيب عدة ملفات ودمجها',self.merge_dialog,False)]
+        for column,(name,hint_text,handler,primary) in enumerate(start_items):
+            button=self.button(name,handler,primary=primary);button.setMinimumWidth(180);actions.addWidget(button,0,column)
+            hint_label=QLabel(hint_text,objectName='startHint');hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter);actions.addWidget(hint_label,1,column)
+        card_layout.addLayout(actions)
         hint = QLabel("أو اسحب الملفات إلى هنا  •  Ctrl+O", objectName="subtle")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(hint)
-        features = QLabel("دمج وتقسيم   /   ترتيب وتدوير   /   نص عربي وترقيم", objectName="subtle")
+        card_layout.addWidget(hint)
+        features = QLabel("تحرير  •  OCR عربي وإنجليزي  •  نماذج وتوقيع  •  حماية وطباعة", objectName="subtle")
         features.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(features)
+        card_layout.addWidget(features);layout.addWidget(card,0,Qt.AlignmentFlag.AlignCenter)
         return widget
 
     def page_sidebar(self):
