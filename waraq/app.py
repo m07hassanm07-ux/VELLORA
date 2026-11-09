@@ -196,6 +196,19 @@ class PreviewArea(QScrollArea):
             self.page_requested.emit(-1); event.accept(); return
         super().wheelEvent(event)
 
+
+class ContinuousPageLabel(QLabel):
+    selected = Signal(int)
+
+    def __init__(self,index,parent=None):
+        super().__init__(parent);self.index=index
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter);self.setObjectName('continuousPage')
+        self.setStyleSheet('QLabel#continuousPage { background: white; border: 1px solid #76828a; color: #566b79; }')
+
+    def mousePressEvent(self,event):
+        if event.button()==Qt.MouseButton.LeftButton:self.selected.emit(self.index)
+        super().mousePressEvent(event)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.resized.emit()
@@ -427,6 +440,8 @@ class MainWindow(QMainWindow):
         self._pending_form_field=None
         self.settings=QSettings();self.dark_mode=str(self.settings.value('ui/dark_mode','false')).lower()=='true'
         self._page_editor=None;self._editing_page=-1
+        self.view_mode='single';self._continuous_generation=0;self._continuous_requested=set();self._continuous_sync=False
+        self._closing=False
         self.resize(1320, 850)
         self.setMinimumSize(980, 650)
         self.setWindowTitle("VELLORA | PDF Studio")
@@ -640,6 +655,8 @@ class MainWindow(QMainWindow):
         self.page_number.setToolTip("الانتقال إلى صفحة")
         bar_layout.addWidget(QLabel("صفحة"))
         bar_layout.addWidget(self.page_number)
+        self.view_mode_combo=QComboBox();self.view_mode_combo.addItem('صفحة واحدة','single');self.view_mode_combo.addItem('تمرير متصل','continuous');self.view_mode_combo.addItem('صفحتان متقابلتان','facing')
+        self.view_mode_combo.setToolTip('طريقة عرض صفحات المستند');self.view_mode_combo.currentIndexChanged.connect(self.change_view_mode);bar_layout.addWidget(self.view_mode_combo)
         bar_layout.addWidget(self.button("−", lambda: self.change_zoom(0.8)))
         self.zoom_label = QLabel("ملاءمة")
         self.zoom_label.setMinimumWidth(55)
@@ -650,7 +667,7 @@ class MainWindow(QMainWindow):
         bar_layout.addWidget(self.button('بحث',self.open_search))
         bar_layout.addWidget(self.button('مراجعة',self.open_review))
         layout.addWidget(bar)
-        self.preview = PreviewArea()
+        self.viewer_stack=QStackedWidget();self.preview = PreviewArea()
         self.preview.setWidgetResizable(True)
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.resized.connect(lambda: self.preview_timer.start(140) if self.fit_mode else None)
@@ -666,7 +683,11 @@ class MainWindow(QMainWindow):
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview_layout.addWidget(self.image_label)
         self.preview.setWidget(self.preview_surface)
-        layout.addWidget(self.preview, 1)
+        self.viewer_stack.addWidget(self.preview)
+        self.continuous_preview=PreviewArea();self.continuous_preview.setWidgetResizable(True);self.continuous_preview.setAlignment(Qt.AlignmentFlag.AlignHCenter|Qt.AlignmentFlag.AlignTop)
+        self.continuous_surface=QWidget(objectName='previewSurface');self.continuous_layout=QGridLayout(self.continuous_surface);self.continuous_layout.setContentsMargins(30,26,30,26);self.continuous_layout.setHorizontalSpacing(22);self.continuous_layout.setVerticalSpacing(22)
+        self.continuous_preview.setWidget(self.continuous_surface);self.continuous_preview.verticalScrollBar().valueChanged.connect(self.schedule_continuous_render);self.continuous_preview.resized.connect(self.rebuild_continuous_view)
+        self.viewer_stack.addWidget(self.continuous_preview);layout.addWidget(self.viewer_stack,1)
         return widget
 
     def make_menu(self):
@@ -1149,6 +1170,7 @@ class MainWindow(QMainWindow):
             flags = QItemSelectionModel.SelectionFlag.NoUpdate if selected_ids else QItemSelectionModel.SelectionFlag.ClearAndSelect
             self.pages.setCurrentRow(min(max(0, current), count - 1), flags)
             self.schedule_preview()
+            if self.view_mode!='single':self.rebuild_continuous_view()
         self.thumb_queue = list(range(count))
         if count:
             self.thumb_timer.start()
@@ -1221,7 +1243,66 @@ class MainWindow(QMainWindow):
 
     def schedule_preview(self, *_):
         if not self.rebuilding:
-            self.preview_timer.start(60)
+            if self.view_mode=='single':self.preview_timer.start(60)
+            elif not self._continuous_sync:self.scroll_continuous_to_page(self.pages.currentRow())
+
+    def change_view_mode(self,*_):
+        self.view_mode=self.view_mode_combo.currentData() or 'single'
+        self.viewer_stack.setCurrentIndex(0 if self.view_mode=='single' else 1)
+        if self.view_mode=='single':self.schedule_preview()
+        else:self.rebuild_continuous_view()
+
+    def clear_continuous_layout(self):
+        while self.continuous_layout.count():
+            item=self.continuous_layout.takeAt(0);widget=item.widget()
+            if widget:widget.deleteLater()
+
+    def rebuild_continuous_view(self,*_):
+        if self._closing or self.view_mode=='single' or not hasattr(self,'continuous_layout'):return
+        self._continuous_generation+=1;self._continuous_requested=set();self.clear_continuous_layout();self.continuous_labels=[]
+        columns=2 if self.view_mode=='facing' else 1
+        available=max(260,self.continuous_preview.viewport().width()-90-(22 if columns==2 else 0));cell_width=available/columns
+        for index,page in enumerate(self.document.pages):
+            width,height=self.display_size(page);scale=min(1.65,max(.12,(cell_width-30)/max(width,1)))
+            label=ContinuousPageLabel(index);label.render_scale=scale;label.setFixedSize(round(width*scale),round(height*scale));label.setText(f'صفحة {index+1}\nجاري تجهيز المعاينة…')
+            label.setToolTip(f'صفحة {index+1} — انقر لتحديد الصفحة');label.selected.connect(self.select_continuous_page)
+            self.continuous_layout.addWidget(label,index//columns,index%columns,Qt.AlignmentFlag.AlignHCenter|Qt.AlignmentFlag.AlignTop);self.continuous_labels.append(label)
+        for column in range(columns):self.continuous_layout.setColumnStretch(column,1)
+        QTimer.singleShot(0,lambda:self.scroll_continuous_to_page(max(0,self.pages.currentRow())))
+        QTimer.singleShot(20,self.render_visible_continuous_pages)
+
+    def schedule_continuous_render(self,*_):
+        if not hasattr(self,'_continuous_timer'):
+            self._continuous_timer=QTimer(self);self._continuous_timer.setSingleShot(True);self._continuous_timer.timeout.connect(self.render_visible_continuous_pages)
+        self._continuous_timer.start(45)
+
+    def render_visible_continuous_pages(self):
+        if self._closing or self.view_mode=='single' or not getattr(self,'continuous_labels',None):return
+        generation=self._continuous_generation;viewport=self.continuous_preview.viewport();top=self.continuous_preview.verticalScrollBar().value();bottom=top+viewport.height();buffer=viewport.height()
+        nearest=None;nearest_distance=None
+        for index,label in enumerate(self.continuous_labels):
+            y=label.mapTo(self.continuous_surface,label.rect().topLeft()).y();end=y+label.height();distance=0 if end>=top and y<=bottom else min(abs(y-top),abs(end-bottom))
+            if nearest_distance is None or distance<nearest_distance:nearest=index;nearest_distance=distance
+            if end>=top-buffer and y<=bottom+buffer:
+                if index not in self._continuous_requested and label.pixmap().isNull():
+                    self._continuous_requested.add(index);page=self.document.pages[index]
+                    def completed(meta,png,i=index,p=page,target=label,g=generation):
+                        if g!=self._continuous_generation or i>=len(self.document.pages) or self.document.pages[i]!=p:return
+                        if meta.get('error'):target.setText('تعذر عرض الصفحة');return
+                        pixmap=QPixmap.fromImage(QImage.fromData(png,'PNG'));target.setPixmap(pixmap);target.setFixedSize(pixmap.size())
+                    self.renderer.submit(self.document.sources[page.source],page,label.render_scale,completed,index=index,total=len(self.document.pages))
+            elif distance>buffer*2 and not label.pixmap().isNull():
+                label.clear();label.setText(f'صفحة {index+1}\nحرّك التمرير لعرضها');self._continuous_requested.discard(index)
+        if nearest is not None and nearest!=self.pages.currentRow():
+            self._continuous_sync=True;self.pages.setCurrentRow(nearest);self._continuous_sync=False
+            self.page_number.blockSignals(True);self.page_number.setValue(nearest+1);self.page_number.blockSignals(False)
+
+    def select_continuous_page(self,index):
+        self.pages.setCurrentRow(index);self.scroll_continuous_to_page(index)
+
+    def scroll_continuous_to_page(self,index):
+        if self.view_mode=='single' or not 0<=index<len(getattr(self,'continuous_labels',[])):return
+        label=self.continuous_labels[index];self.continuous_preview.ensureWidgetVisible(label,20,30);self.schedule_continuous_render()
 
     def render_current(self):
         index = self.pages.currentRow()
@@ -2174,9 +2255,11 @@ class MainWindow(QMainWindow):
             if self._page_editor is not None:
                 event.ignore();return
         if self.confirm_discard():
+            self._closing=True;self._continuous_generation+=1
             self.autosave_timer.stop();self.clear_recovery()
             self.thumb_timer.stop()
             self.preview_timer.stop()
+            if hasattr(self,'_continuous_timer'):self._continuous_timer.stop()
             self.close_pdfs()
             event.accept()
         else:

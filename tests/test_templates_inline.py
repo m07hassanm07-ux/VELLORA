@@ -62,5 +62,14 @@ class TemplateAndInlineTests(unittest.TestCase):
         self.assertIs(window.stack.currentWidget(),window.splitter)
         window.document.mark_saved();window.close()
 
+    def test_continuous_and_facing_views_build_all_page_slots(self):
+        window=MainWindow();window.document.import_bytes('three-pages.pdf',blank_page()+b'')
+        window.document.import_bytes('second.pdf',blank_page());window.document.import_bytes('third.pdf',blank_page());window.refresh()
+        window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData('continuous'));self.app.processEvents()
+        self.assertEqual(len(window.continuous_labels),3);self.assertEqual(window.viewer_stack.currentIndex(),1)
+        window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData('facing'));self.app.processEvents()
+        self.assertEqual(len(window.continuous_labels),3);self.assertEqual(window.continuous_layout.itemAtPosition(0,1).widget().index,1)
+        window.document.mark_saved();window.close()
+
 
 if __name__=='__main__':unittest.main()
