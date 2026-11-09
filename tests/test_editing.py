@@ -11,7 +11,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from waraq.core import Document
-from waraq.editing import prepare_page, inspect_page, edit_page, insert_table
+from waraq.editing import prepare_page, inspect_page, edit_page, insert_table, infer_table, replace_table, EditableObject
 from waraq.editor_dialog import PageEditorDialog
 from waraq.rendering import ensure_font_support, render_image
 
@@ -98,6 +98,22 @@ class PageEditingTests(unittest.TestCase):
         text=' '.join(PdfReader(BytesIO(changed)).pages[0].extract_text().split())
         self.assertIn('Name',text);self.assertIn('Amount',text);self.assertIn('Ali',text)
         self.assertIn('OLD TEXT', PdfReader(BytesIO(source)).pages[0].extract_text())
+
+    def test_table_inference_and_replacement_use_cell_matrix(self):
+        entries=[];index=0
+        for row,y in enumerate((200,235)):
+            for column,x in enumerate((50,220)):
+                entries.append(EditableObject(index,'text',f'R{row}C{column}',(x,y,90,18),12));index+=1
+        inferred=infer_table(entries,(30,180,350,100));self.assertIsNotNone(inferred)
+        rows,indexes,bounds=inferred;self.assertEqual(rows,[['R0C0','R0C1'],['R1C0','R1C1']]);self.assertEqual(indexes,[0,1,2,3])
+        self.assertGreater(bounds[2],250)
+
+        source=prepare_page(text_fixture());inserted=insert_table(source,(40,200,420,120),[['Name','Amount'],['Ali','10']])
+        detected=infer_table(inspect_page(inserted)[2],(30,180,440,160));self.assertIsNotNone(detected)
+        _,table_indexes,table_bounds=detected
+        changed=replace_table(inserted,table_indexes,table_bounds,[['Item','Total'],['Book','25']])
+        extracted=' '.join(PdfReader(BytesIO(changed)).pages[0].extract_text().split())
+        self.assertIn('Item',extracted);self.assertIn('Book',extracted);self.assertNotIn('Name',extracted)
 
     def test_cropped_rotated_page_normalizes_without_visual_change(self):
         for rotation in (0, 90, 180, 270):

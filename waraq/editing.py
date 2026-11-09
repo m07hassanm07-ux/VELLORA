@@ -279,7 +279,7 @@ def edit_page(data: bytes, indexes=(), *, text=None, image: QImage | None=None, 
 
 
 def insert_table(data: bytes, rect, rows: list[list[str]], *, family='Segoe UI', size=10,
-                 header=True, rtl=False) -> bytes:
+                 header=True, rtl=False, background=None) -> bytes:
     """Insert a vector table from editable row/column data."""
     if not rows or not any(rows):raise ValueError('أضف خلية واحدة على الأقل للجدول.')
     columns=max(len(row) for row in rows)
@@ -293,14 +293,69 @@ def insert_table(data: bytes, rect, rows: list[list[str]], *, family='Segoe UI',
     painter=QPainter(pdf)
     try:
         cell_w,cell_h=w/columns,h/len(rows);font=QFont(family);font.setPointSizeF(max(4,min(72,size)))
+        flags=int(Qt.AlignmentFlag.AlignVCenter|(Qt.AlignmentFlag.AlignRight if rtl else Qt.AlignmentFlag.AlignLeft)|Qt.TextFlag.TextWordWrap)
+        # Fit long cell content uniformly so columns keep a professional,
+        # consistent type size while allowing multi-line cells.
+        while font.pointSizeF()>4.01:
+            painter.setFont(font)
+            if all(painter.boundingRect(QRectF(0,0,max(1,cell_w-8),max(1,cell_h-4)),flags,str(value)[:1000]).height()<=cell_h-4 for row in rows for value in row):break
+            font.setPointSizeF(max(4,font.pointSizeF()-.5))
         painter.setFont(font);painter.setPen(QColor('#334e5c'))
+        if background:painter.fillRect(QRectF(x,y,w,h),QColor(background))
         for row_index,row in enumerate(rows):
             for logical_column,value in enumerate(row):
                 column=columns-1-logical_column if rtl else logical_column
                 cell=QRectF(x+column*cell_w,y+row_index*cell_h,cell_w,cell_h)
                 if header and row_index==0:painter.fillRect(cell,QColor('#dcefe9'))
-                painter.drawRect(cell);align=Qt.AlignmentFlag.AlignVCenter|(Qt.AlignmentFlag.AlignRight if rtl else Qt.AlignmentFlag.AlignLeft)
-                painter.drawText(cell.adjusted(4,2,-4,-2),align,str(value)[:1000])
+                painter.drawRect(cell)
+                painter.drawText(cell.adjusted(4,2,-4,-2),flags,str(value)[:1000])
     finally:painter.end();del pdf;buffer.close()
     page.merge_page(PdfReader(BytesIO(bytes(output))).pages[0])
     writer=PdfWriter();writer.append(reader,import_outline=False);stream=BytesIO();writer.write(stream);writer.close();return stream.getvalue()
+
+
+def infer_table(entries: list[EditableObject], rect=None):
+    """Infer a cell matrix from positioned text, with conservative safeguards."""
+    candidates=[entry for entry in entries if entry.kind=='text' and entry.text.strip()]
+    if rect is not None:
+        x,y,w,h=rect
+        candidates=[entry for entry in candidates if x<=entry.rect[0]+entry.rect[2]/2<=x+w and y<=entry.rect[1]+entry.rect[3]/2<=y+h]
+    if len(candidates)<4:return None
+    rows=[]
+    for entry in sorted(candidates,key=lambda item:(item.rect[1]+item.rect[3]/2,item.rect[0])):
+        center=entry.rect[1]+entry.rect[3]/2;tolerance=max(3,entry.size*.7)
+        matches=[row for row in rows if abs(row['center']-center)<=tolerance]
+        if matches:
+            row=min(matches,key=lambda value:abs(value['center']-center));row['items'].append(entry)
+            row['center']=sum(item.rect[1]+item.rect[3]/2 for item in row['items'])/len(row['items'])
+        else:rows.append({'center':center,'items':[entry]})
+    rows=[row for row in rows if len(row['items'])>=2]
+    if len(rows)<2:return None
+    column_centers=[]
+    for entry in sorted((item for row in rows for item in row['items']),key=lambda item:item.rect[0]+item.rect[2]/2):
+        center=entry.rect[0]+entry.rect[2]/2;tolerance=max(10,entry.size*2)
+        matches=[(index,value) for index,value in enumerate(column_centers) if abs(value-center)<=tolerance]
+        if matches:
+            index,_=min(matches,key=lambda pair:abs(pair[1]-center));column_centers[index]=(column_centers[index]+center)/2
+        else:column_centers.append(center)
+    column_centers.sort()
+    if len(column_centers)<2:return None
+    matrix=[]
+    for row in sorted(rows,key=lambda value:value['center']):
+        cells=['']*len(column_centers)
+        for entry in sorted(row['items'],key=lambda item:item.rect[0]):
+            column=min(range(len(column_centers)),key=lambda i:abs(column_centers[i]-(entry.rect[0]+entry.rect[2]/2)))
+            cells[column]=(cells[column]+' '+entry.text).strip()
+        matrix.append(cells)
+    used=[item for row in rows for item in row['items']]
+    left=min(item.rect[0] for item in used);top=min(item.rect[1] for item in used)
+    right=max(item.rect[0]+item.rect[2] for item in used);bottom=max(item.rect[1]+item.rect[3] for item in used)
+    pad=max(5,max(item.size for item in used)*.6)
+    bounds=(max(0,left-pad),max(0,top-pad),right-left+2*pad,bottom-top+2*pad)
+    return matrix,list(dict.fromkeys(item.index for item in used)),bounds
+
+
+def replace_table(data: bytes, indexes, rect, rows, *, family='Segoe UI', size=10, header=True, rtl=False):
+    """Replace inferred table text and cover the prior grid inside its bounds."""
+    changed=_remove_objects(data,list(indexes))
+    return insert_table(changed,rect,rows,family=family,size=size,header=header,rtl=rtl,background='#ffffff')

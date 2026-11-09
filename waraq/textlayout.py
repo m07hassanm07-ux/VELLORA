@@ -138,9 +138,15 @@ def group_text(data, entries, mode='paragraph'):
         pieces = []
         for pos, glyph in enumerate(selected):
             if pos:
-                between = glyphs[selected[pos-1].index+1:glyph.index]
+                previous=selected[pos-1]
+                between = glyphs[previous.index+1:glyph.index]
                 whites = ''.join(g.text for g in between if g.text.isspace())
-                if whites: pieces.append('\n' if '\n' in whites or '\r' in whites else ' ')
+                # Separate PDF text objects often omit an explicit newline.
+                # Preserve visual line structure from glyph baselines so a
+                # multi-line paragraph reflows as a paragraph, not one line.
+                vertical=abs((glyph.rect[1]+glyph.rect[3]/2)-(previous.rect[1]+previous.rect[3]/2))
+                if vertical>max(glyph.rect[3],previous.rect[3])*.55:pieces.append('\n')
+                elif whites:pieces.append('\n' if '\n' in whites or '\r' in whites else ' ')
             pieces.append(glyph.text)
         text = normal_text(''.join(pieces))
         box = union_rect([g.rect for g in selected])

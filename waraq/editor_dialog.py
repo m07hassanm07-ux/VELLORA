@@ -7,9 +7,10 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase, QImage, QImageReader, QK
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout,
     QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QInputDialog,
-    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QVBoxLayout, QWidget)
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QVBoxLayout, QWidget,
+    QTableWidget, QTableWidgetItem)
 
-from .editing import edit_page, inspect_page, prepare_page, insert_table
+from .editing import edit_page, inspect_page, prepare_page, insert_table, infer_table, replace_table
 from .rendering import render_image, ensure_font_support
 from .textlayout import group_text
 from .fonts import install_font
@@ -170,6 +171,34 @@ class EditCanvas(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
 
+class TableEditorDialog(QDialog):
+    def __init__(self,rows=None,parent=None):
+        super().__init__(parent);self.setWindowTitle('محرر الجدول — VELLORA');self.resize(760,500)
+        layout=QVBoxLayout(self);layout.addWidget(QLabel('حرّر الخلايا مباشرة. يمكنك إضافة أو حذف صفوف وأعمدة قبل وضع الجدول على الصفحة.'))
+        rows=rows or [['العنوان 1','العنوان 2'],['قيمة 1','قيمة 2']];columns=max(len(row) for row in rows)
+        self.table=QTableWidget(len(rows),columns)
+        for r,row in enumerate(rows):
+            for c,value in enumerate(row):self.table.setItem(r,c,QTableWidgetItem(str(value)))
+        self.table.horizontalHeader().setStretchLastSection(True);layout.addWidget(self.table,1)
+        tools=QHBoxLayout()
+        for label,callback in [('إضافة صف',self.add_row),('حذف صف',self.remove_row),('إضافة عمود',self.add_column),('حذف عمود',self.remove_column)]:
+            button=QPushButton(label);button.clicked.connect(callback);tools.addWidget(button)
+        self.header=QCheckBox('الصف الأول عنوان');self.header.setChecked(True);self.rtl=QCheckBox('ترتيب الأعمدة من اليمين');self.rtl.setChecked(True)
+        tools.addWidget(self.header);tools.addWidget(self.rtl);tools.addStretch();layout.addLayout(tools)
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('استخدام الجدول');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
+        buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
+
+    def add_row(self):self.table.insertRow(self.table.rowCount())
+    def remove_row(self):
+        if self.table.rowCount()>1:self.table.removeRow(max(0,self.table.currentRow()))
+    def add_column(self):self.table.insertColumn(self.table.columnCount())
+    def remove_column(self):
+        if self.table.columnCount()>1:self.table.removeColumn(max(0,self.table.currentColumn()))
+    def values(self):
+        return [[self.table.item(r,c).text() if self.table.item(r,c) else '' for c in range(self.table.columnCount())] for r in range(self.table.rowCount())]
+
+
 class PageEditorDialog(QDialog):
     ocr_requested = Signal()
     navigate_requested = Signal(int)
@@ -187,7 +216,7 @@ class PageEditorDialog(QDialog):
         self.initial_data = self.data
         self.history, self.future = [], []
         self.mode = 'select'
-        self.image = None; self.image_opacity = 1.0; self.table_rows = None
+        self.image = None; self.image_opacity = 1.0; self.table_rows = None;self.table_indexes=[];self.table_header=True;self.table_rtl=True
         self.element_clipboard = None
         self.loading = False
         self.draft = None
@@ -197,7 +226,7 @@ class PageEditorDialog(QDialog):
         note.setWordWrap(True); layout.addWidget(note)
         toolbar = QHBoxLayout()
         for label, callback in [('تحديد عنصر', self.select_mode), ('نص جديد', self.new_text), ('إضافة صورة…', self.choose_image),
-                                ('استبدال الصورة…', self.replace_selected_image), ('إدراج جدول…', self.new_table),
+                                ('استبدال الصورة…', self.replace_selected_image), ('إدراج جدول…', self.new_table),('تحرير جدول محدد…',self.edit_existing_table),
                                 ('قص صورة', self.crop_image), ('تدوير صورة', self.rotate_image),
                                 ('نسخ عنصر', self.copy_selected_element), ('لصق عنصر', self.paste_element),
                                 ('تكرار', self.duplicate_selected)]:
@@ -499,12 +528,19 @@ class PageEditorDialog(QDialog):
         self.mark_pending()
 
     def grow_direct_editor(self, size):
-        """Grow the in-page box for longer text without imposing a fixed size."""
+        """Reflow the paragraph box while avoiding the next visible object."""
         if self.direct_proxy is None or self.direct_proxy.scene() is None:
             return
         rect = self.direct_proxy.geometry()
-        wanted_height = max(rect.height(), size.height() + 14)
-        rect.setHeight(min(wanted_height, self.height - rect.top()))
+        wanted_height=max(self.size.value()*1.9,size.height()+14)
+        selected=set(self.selected_indexes());bottom=self.height
+        for entry in self.entries:
+            indexes=set(entry.indices or (entry.index,))
+            if indexes & selected:continue
+            other=QRectF(*entry.rect)
+            horizontal=min(rect.right(),other.right())-max(rect.left(),other.left())
+            if horizontal>min(rect.width(),other.width())*.25 and other.top()>rect.top()+self.size.value():bottom=min(bottom,other.top()-5)
+        rect.setHeight(max(self.size.value()*1.9,min(wanted_height,bottom-rect.top())))
         self.direct_proxy.setGeometry(rect)
         self.set_rect(rect)
 
@@ -615,18 +651,32 @@ class PageEditorDialog(QDialog):
         painter=QPainter(result);painter.setOpacity(self.image_opacity);painter.drawImage(0,0,self.image);painter.end();return result
 
     def new_table(self):
-        raw,ok=QInputDialog.getMultiLineText(self,'إدراج أو تحرير جدول','اكتب صفوف الجدول؛ افصل الخلايا بزر Tab. يمكنك إضافة الأسطر أو حذفها وإعادة ترتيبها:','العنوان 1\tالعنوان 2\nقيمة 1\tقيمة 2')
-        if not ok:return
-        rows=[[cell.strip() for cell in line.split('\t')] for line in raw.splitlines() if line.strip()]
-        if not rows:QMessageBox.warning(self,'الجدول','أضف صفًا واحدًا على الأقل.');return
-        self.clear_draft();self.objects.clearSelection();self.mode='table';self.image=None;self.table_rows=rows
+        dialog=TableEditorDialog(parent=self)
+        if dialog.exec()!=QDialog.DialogCode.Accepted:return
+        rows=dialog.values()
+        self.clear_draft();self.objects.clearSelection();self.mode='table';self.image=None;self.table_rows=rows;self.table_indexes=[]
+        self.table_header=dialog.header.isChecked();self.table_rtl=dialog.rtl.isChecked()
         self.set_rect(QRectF(self.width*.1,self.height*.15,self.width*.8,min(self.height*.6,max(80,len(rows)*35))))
         self.status.setText('اسحب لتحديد مساحة الجدول ثم عاينه. النص والخطوط ستبقى عناصر متجهة داخل PDF.')
+
+    def edit_existing_table(self):
+        raw_entries=inspect_page(self.data)[2];selection=self.rect()
+        inferred=infer_table(raw_entries,(selection.x(),selection.y(),selection.width(),selection.height()))
+        if inferred is None:
+            QMessageBox.information(self,'تحرير الجدول','حدد مستطيلًا يشمل جدولًا يحتوي صفين وعمودين على الأقل، ثم حاول مرة أخرى.');return
+        rows,indexes,bounds=inferred;dialog=TableEditorDialog(rows,self)
+        if dialog.exec()!=QDialog.DialogCode.Accepted:return
+        self.clear_draft();self.mode='edit_table';self.image=None;self.table_rows=dialog.values();self.table_indexes=indexes
+        self.table_header=dialog.header.isChecked();self.table_rtl=dialog.rtl.isChecked();self.set_rect(QRectF(*bounds))
+        self.status.setText(f'تم التعرف على جدول من {len(rows)} صفوف. عدّل حجمه ثم اضغط «تطبيق على الصفحة».')
 
     def make_change(self):
         if self.mode=='table':
             rect=self.rect();return insert_table(self.data,(rect.x(),rect.y(),rect.width(),rect.height()),self.table_rows,
-                family=self.font.currentFont().family(),size=self.size.value(),rtl=True)
+                family=self.font.currentFont().family(),size=self.size.value(),header=self.table_header,rtl=self.table_rtl)
+        if self.mode=='edit_table':
+            rect=self.rect();return replace_table(self.data,self.table_indexes,(rect.x(),rect.y(),rect.width(),rect.height()),self.table_rows,
+                family=self.font.currentFont().family(),size=self.size.value(),header=self.table_header,rtl=self.table_rtl)
         indexes = self.selected_indexes() if self.mode in ('select','replace_image') else []
         if self.mode == 'select' and not indexes:
             raise ValueError('حدد نصًا لتعديله، أو اختر «نص جديد» أو «إضافة صورة».')

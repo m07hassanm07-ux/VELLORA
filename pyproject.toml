@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vellora-pdf"
-version = "2.4.0"
+version = "2.5.0"
 description = "VELLORA: an independent, local-first professional PDF desktop studio"
 requires-python = ">=3.11"
 license = "MIT"
