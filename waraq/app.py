@@ -33,6 +33,7 @@ from .merge_dialog import MergeDialog
 from .conversion import (acquire_wia_image, convert_file, image_bytes_to_pdf,
                          web_to_pdf, export_pdf_office, SUPPORTED_TYPES, ConversionCancelled)
 from .editor_dialog import PageEditorDialog
+from .editing import edit_page
 from .templates import encode_template, decode_template, builtin_template
 from .professional import (add_attachment, attachment_bytes, list_attachments, remove_attachment,
                            add_form_field, export_page_images, extract_text, fill_form_fields,
@@ -183,6 +184,17 @@ class PageList(QListWidget):
 
 class PreviewArea(QScrollArea):
     resized = Signal()
+    page_requested = Signal(int)
+
+    def wheelEvent(self, event):
+        """Continue through a document when the current page boundary is reached."""
+        bar = self.verticalScrollBar()
+        delta = event.angleDelta().y()
+        if delta < 0 and bar.value() >= bar.maximum():
+            self.page_requested.emit(1); event.accept(); return
+        if delta > 0 and bar.value() <= bar.minimum():
+            self.page_requested.emit(-1); event.accept(); return
+        super().wheelEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -305,8 +317,10 @@ class CreateDocumentDialog(QDialog):
         title=QLabel('ابدأ مستندًا جديدًا');title.setObjectName('section');layout.addWidget(title)
         note=QLabel('اختر صفحة فارغة أو قالبًا جاهزًا. يمكنك تعديل النصوص مباشرة بعد الإنشاء.');note.setWordWrap(True);layout.addWidget(note)
         self.choices=QListWidget();self.choices.setSpacing(4)
-        entries=[('صفحة فارغة A4','مستند فارغ عمودي','blank-a4'),('صفحة فارغة أفقية','A4 بالاتجاه الأفقي','blank-landscape'),
-                 ('صفحة Letter','مقاس المراسلات الأمريكي','blank-letter'),('تقرير عمل','قالب تقرير قابل للتحرير','report'),
+        entries=[('صفحة فارغة A4','210 × 297 مم — المقاس المكتبي القياسي','blank-a4'),('A4 أفقي','297 × 210 مم','blank-a4-landscape'),
+                 ('صفحة فارغة A3','297 × 420 مم — للرسومات والجداول الكبيرة','blank-a3'),('A3 أفقي','420 × 297 مم','blank-a3-landscape'),
+                 ('صفحة Letter','8.5 × 11 بوصة — المراسلات الأمريكية','blank-letter'),('صفحة Legal','8.5 × 14 بوصة — المستندات القانونية','blank-legal'),
+                 ('صفحة A5','148 × 210 مم — الكتيبات والملاحظات','blank-a5'),('تقرير عمل','قالب تقرير قابل للتحرير','report'),
                  ('خطاب رسمي','قالب خطاب وهوية مؤسسة','letter'),('محضر اجتماع','الحضور والجدول والقرارات','meeting'),
                  ('فاتورة احترافية','بنود وإجماليات وضريبة','invoice'),('عرض سعر','خدمات وأسعار وشروط','quote'),
                  ('شهادة تقدير','شهادة قابلة لتخصيص الاسم','certificate'),('اتفاقية عمل','أطراف وبنود وتوقيعات','contract'),
@@ -328,6 +342,45 @@ class CreateDocumentDialog(QDialog):
 
     def update_options(self,*_):
         self.pages.setEnabled(self.kind().startswith('blank'))
+
+
+class VisualSignatureDialog(QDialog):
+    """Choose a handwritten signature image and an optional organization logo."""
+    def __init__(self,parent=None):
+        super().__init__(parent);self.setWindowTitle('إضافة توقيع مرئي');self.setMinimumWidth(540)
+        layout=QVBoxLayout(self)
+        note=QLabel('اختر صورة توقيع مكتوب باليد (يفضل PNG بخلفية شفافة)، ويمكن إضافة شعار بجواره. لن يضيف VELLORA اسمًا أو تاريخًا تلقائيًا.')
+        note.setWordWrap(True);layout.addWidget(note)
+        form=QFormLayout();self.signature=QLineEdit();self.signature.setReadOnly(True);self.logo=QLineEdit();self.logo.setReadOnly(True)
+        signature_row=QHBoxLayout();signature_row.addWidget(self.signature,1);choose_signature=QPushButton('اختيار صورة التوقيع…');choose_signature.clicked.connect(lambda:self.choose(self.signature));signature_row.addWidget(choose_signature)
+        logo_row=QHBoxLayout();logo_row.addWidget(self.logo,1);choose_logo=QPushButton('اختيار الشعار…');choose_logo.clicked.connect(lambda:self.choose(self.logo));logo_row.addWidget(choose_logo)
+        form.addRow('التوقيع',signature_row);form.addRow('الشعار (اختياري)',logo_row);layout.addLayout(form)
+        self.preview=QLabel('ستظهر المعاينة هنا');self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter);self.preview.setMinimumHeight(150);self.preview.setStyleSheet('border:1px solid #84919a;background:white;color:#566b79;');layout.addWidget(self.preview)
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('اختيار الموضع على الصفحة');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
+        buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
+
+    def choose(self,target):
+        path,_=QFileDialog.getOpenFileName(self,'اختيار صورة','','صور (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)')
+        if path:target.setText(path);self.update_preview()
+
+    def signature_image(self):
+        if not self.signature.text():return QImage()
+        signature=QImage(self.signature.text())
+        if signature.isNull():return signature
+        logo=QImage(self.logo.text()) if self.logo.text() else QImage()
+        if logo.isNull():return signature
+        height=max(signature.height(),logo.height());gap=max(12,height//12)
+        result=QImage(signature.width()+logo.width()+gap,height,QImage.Format.Format_ARGB32_Premultiplied);result.fill(Qt.GlobalColor.transparent)
+        painter=QPainter(result);painter.drawImage(0,(height-signature.height())//2,signature);painter.drawImage(signature.width()+gap,(height-logo.height())//2,logo);painter.end();return result
+
+    def update_preview(self):
+        image=self.signature_image()
+        if not image.isNull():self.preview.setPixmap(QPixmap.fromImage(image).scaled(480,135,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
+
+    def accept(self):
+        if self.signature_image().isNull():QMessageBox.warning(self,'التوقيع المرئي','اختر صورة توقيع صالحة أولًا.');return
+        super().accept()
 
 
 class ShortcutDialog(QDialog):
@@ -370,6 +423,7 @@ class MainWindow(QMainWindow):
         self.renderer=ProcessRenderer(self);self._view_serial=0;self._thumb_inflight=False;self._autosave_thread=None
         self.selection_rects = []; self.selection_char_ids = []; self.search_matches = []; self.pending_match = None
         self.review_annotations=[];self._stamp_label='للمراجعة'
+        self._visual_signature=QImage()
         self._pending_form_field=None
         self.settings=QSettings();self.dark_mode=str(self.settings.value('ui/dark_mode','false')).lower()=='true'
         self._page_editor=None;self._editing_page=-1
@@ -600,6 +654,7 @@ class MainWindow(QMainWindow):
         self.preview.setWidgetResizable(True)
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.resized.connect(lambda: self.preview_timer.start(140) if self.fit_mode else None)
+        self.preview.page_requested.connect(self.scroll_to_adjacent_page)
         self.preview_surface = QWidget(objectName="previewSurface")
         preview_layout = QVBoxLayout(self.preview_surface)
         preview_layout.setContentsMargins(30, 26, 30, 26)
@@ -966,10 +1021,12 @@ class MainWindow(QMainWindow):
                 path,_=QFileDialog.getOpenFileName(self,'إنشاء من قالب محفوظ','','قالب VELLORA (*.waraqt)')
                 if not path:return
                 template_name,data=decode_template(Path(path).read_bytes());source_name=template_name+'.pdf'
-            elif kind in ('report','letter','meeting'):
+            elif kind in ('report','letter','meeting','invoice','quote','certificate','contract'):
                 template_name,data=builtin_template(kind);source_name=template_name+'.pdf'
             else:
-                sizes={'blank-a4':(595.28,841.89),'blank-landscape':(841.89,595.28),'blank-letter':(612,792)}
+                sizes={'blank-a4':(595.28,841.89),'blank-a4-landscape':(841.89,595.28),
+                       'blank-a3':(841.89,1190.55),'blank-a3-landscape':(1190.55,841.89),
+                       'blank-a5':(419.53,595.28),'blank-letter':(612,792),'blank-legal':(612,1008)}
                 width,height=sizes[kind];writer=PdfWriter()
                 for _ in range(dialog.pages.value()):writer.add_blank_page(width,height)
                 stream=BytesIO();writer.write(stream);writer.close();data=stream.getvalue();source_name=(dialog.name.text().strip() or 'مستند جديد')+'.pdf'
@@ -1304,6 +1361,21 @@ class MainWindow(QMainWindow):
             if w<40 or h<25:w,h=min(180,width),min(65,height)
             x=max(0,min(x,width-w));y=max(0,min(y,height-h))
             payload={'rect':(x,y,w,h),'text':self._stamp_label}
+        elif kind=='visual-signature':
+            x,y=min(start[0],end[0]),min(start[1],end[1]);w,h=abs(end[0]-start[0]),abs(end[1]-start[1])
+            width,height=self.display_size(self.document.pages[self.pages.currentRow()])
+            if w<40 or h<20:
+                w=min(220,width);h=min(90,height)
+            x=max(0,min(x,width-w));y=max(0,min(y,height-h))
+            if self._visual_signature.isNull():return
+            try:
+                page_data=self.document_job('تجهيز صفحة التوقيع','assemble',{'indexes':[self.pages.currentRow()]})['data']
+                result=edit_page(page_data,image=self._visual_signature,rect=(x,y,w,h))
+                self.document.replace_page(self.pages.currentRow(),result);self.refresh(self.pages.currentRow())
+                self.statusBar().showMessage('أُضيف التوقيع المرئي والشعار. اختر «حفظ نسخة» لحفظ المستند.',12000)
+            except JobCancelled:pass
+            except Exception as exc:self.error(exc,exc)
+            return
         else:return
         self.apply_review_action(kind,payload)
 
@@ -1349,12 +1421,11 @@ class MainWindow(QMainWindow):
 
     def begin_visual_signature(self):
         if not self.document.pages:return
-        signer,ok=QInputDialog.getText(self,'توقيع مرئي','اسم الموقّع:')
-        if not ok or not signer.strip():return
-        from datetime import datetime
-        self._stamp_label=f'توقيع: {signer.strip()} — {datetime.now().strftime("%Y-%m-%d")}'[:60]
-        self.image_label.tool='stamp';self.image_label.setCursor(Qt.CursorShape.CrossCursor)
-        self.statusBar().showMessage('اسحب لتحديد مكان التوقيع المرئي. هذا توقيع بصري وليس شهادة رقمية.',15000)
+        dialog=VisualSignatureDialog(self)
+        if dialog.exec()!=QDialog.DialogCode.Accepted:return
+        self._visual_signature=dialog.signature_image()
+        self.image_label.tool='visual-signature';self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+        self.statusBar().showMessage('اسحب لتحديد مكان وحجم صورة التوقيع والشعار. هذا توقيع مرئي وليس شهادة رقمية.',15000)
 
     def apply_review_action(self,action,payload):
         index=self.pages.currentRow()
@@ -1421,6 +1492,14 @@ class MainWindow(QMainWindow):
     def go_to_page(self, number):
         if not self.rebuilding and number - 1 != self.pages.currentRow():
             self.pages.setCurrentRow(number - 1)
+
+    def scroll_to_adjacent_page(self, direction):
+        """Make the mouse wheel flow through pages without sidebar clicks."""
+        current=self.pages.currentRow();target=current+direction
+        if 0<=target<len(self.document.pages):
+            self.pages.setCurrentRow(target)
+            QTimer.singleShot(0,lambda:self.preview.verticalScrollBar().setValue(
+                self.preview.verticalScrollBar().minimum() if direction>0 else self.preview.verticalScrollBar().maximum()))
 
     def change_zoom(self, factor):
         self.fit_mode = False
@@ -1922,39 +2001,22 @@ class MainWindow(QMainWindow):
         if not self.document.pages:
             return
         if not self.confirm_print_preflight():return
-        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        printer.setResolution(300)
-        printer.setDocName(self.document_name.text())
-        printer.setFromTo(1, len(self.document.pages))
-        dialog = QPrintDialog(printer, self)
-        dialog.setMinMax(1, len(self.document.pages))
-        dialog.setOption(QAbstractPrintDialog.PrintDialogOption.PrintPageRange, True)
-        dialog.setOption(QAbstractPrintDialog.PrintDialogOption.PrintSelection, True)
-        dialog.setOption(QAbstractPrintDialog.PrintDialogOption.PrintCurrentPage, True)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        options=PrintOptionsDialog(self)
-        if options.exec()!=QDialog.DialogCode.Accepted:return
-        progress = QProgressDialog("جاري تجهيز الطباعة…", "إلغاء", 0, len(self.document.pages), self)
-        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
-        progress.setMinimumDuration(0)
-        def tick(done, total):
-            progress.setMaximum(total)
-            progress.setValue(done)
-            QApplication.processEvents()
-            return not progress.wasCanceled()
         try:
-            with self.busy("جاري تجهيز الصفحات للطباعة…"):
-                data=self.document_job('تجهيز الطباعة','assemble',{})['data']
-                indexes = requested_pages(printer, len(self.document.pages), self.pages.currentRow(), self.selected())
-                count = paint_pdf(printer, data, indexes, tick,pages_per_sheet=options.nup.currentData(),grayscale=options.grayscale.isChecked())
-            self.statusBar().showMessage(f"تم إرسال {count} صفحة إلى الطابعة.", 12000)
-        except (PrintCancelled,JobCancelled):
-            self.statusBar().showMessage("تم إلغاء الطباعة. قد تكون الصفحات التي أُرسلت بالفعل في قائمة انتظار الطابعة.", 15000)
+            data=self.document_job('تجهيز معاينة الطباعة','assemble',{})['data']
+            printer=QPrinter(QPrinter.PrinterMode.HighResolution);printer.setResolution(300)
+            printer.setDocName(self.document_name.text());printer.setFromTo(1,len(self.document.pages))
+            dialog=QPrintPreviewDialog(printer,self);dialog.setWindowTitle('معاينة وطباعة — VELLORA');dialog.resize(1100,800)
+            def paint(target):
+                try:
+                    indexes=requested_pages(target,len(self.document.pages),self.pages.currentRow(),self.selected())
+                    paint_pdf(target,data,indexes)
+                except Exception as exc:self.error(exc)
+            dialog.paintRequested.connect(paint)
+            self.statusBar().showMessage('راجع شكل الورق والصفحات، ثم اضغط أيقونة الطابعة داخل المعاينة للإرسال.',15000)
+            dialog.exec()
+        except JobCancelled:pass
         except Exception as exc:
             self.error(exc)
-        finally:
-            progress.close()
 
     def confirm_print_preflight(self):
         try:report=preflight_pdf(self.assembled_bytes('فحص سريع قبل الطباعة'))

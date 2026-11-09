@@ -5,7 +5,10 @@ from PySide6.QtWidgets import QApplication, QStackedWidget
 
 from waraq.templates import encode_template, decode_template, builtin_template
 from waraq.editor_dialog import PageEditorDialog
-from waraq.app import MainWindow, CreateDocumentDialog
+from waraq.app import MainWindow, CreateDocumentDialog, VisualSignatureDialog
+from PySide6.QtGui import QImage, QColor
+from tempfile import TemporaryDirectory
+from pathlib import Path
 
 
 def blank_page():
@@ -36,8 +39,20 @@ class TemplateAndInlineTests(unittest.TestCase):
     def test_new_document_dialog_offers_blank_pages_and_templates(self):
         dialog=CreateDocumentDialog(has_document=False)
         kinds=[dialog.choices.item(i).data(256) for i in range(dialog.choices.count())]
-        self.assertIn('blank-a4',kinds);self.assertIn('letter',kinds);self.assertIn('saved',kinds)
+        for kind in ('blank-a4','blank-a3','blank-a3-landscape','blank-a5','blank-letter','blank-legal'):
+            self.assertIn(kind,kinds)
+        self.assertIn('letter',kinds);self.assertIn('saved',kinds)
         dialog.close()
+
+    def test_visual_signature_combines_signature_and_optional_logo(self):
+        with TemporaryDirectory() as folder:
+            signature=QImage(120,45,QImage.Format.Format_ARGB32);signature.fill(QColor('#19314a'))
+            logo=QImage(40,70,QImage.Format.Format_ARGB32);logo.fill(QColor('#c9343e'))
+            signature_path=Path(folder)/'signature.png';logo_path=Path(folder)/'logo.png'
+            self.assertTrue(signature.save(str(signature_path)));self.assertTrue(logo.save(str(logo_path)))
+            dialog=VisualSignatureDialog();dialog.signature.setText(str(signature_path));dialog.logo.setText(str(logo_path))
+            combined=dialog.signature_image();self.assertFalse(combined.isNull())
+            self.assertEqual(combined.height(),70);self.assertGreater(combined.width(),160);dialog.close()
 
     def test_main_window_enters_and_leaves_inline_edit_mode(self):
         window=MainWindow();window.document.import_bytes('blank.pdf',blank_page());window.refresh()
