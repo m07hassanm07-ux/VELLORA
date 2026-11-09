@@ -172,6 +172,7 @@ class EditCanvas(QGraphicsView):
 
 class PageEditorDialog(QDialog):
     ocr_requested = Signal()
+    navigate_requested = Signal(int)
 
     def __init__(self, data, parent=None, embedded=False):
         super().__init__(parent)
@@ -197,13 +198,15 @@ class PageEditorDialog(QDialog):
         toolbar = QHBoxLayout()
         for label, callback in [('تحديد عنصر', self.select_mode), ('نص جديد', self.new_text), ('إضافة صورة…', self.choose_image),
                                 ('استبدال الصورة…', self.replace_selected_image), ('إدراج جدول…', self.new_table),
-                                ('تدوير صورة', self.rotate_image),
+                                ('قص صورة', self.crop_image), ('تدوير صورة', self.rotate_image),
                                 ('نسخ عنصر', self.copy_selected_element), ('لصق عنصر', self.paste_element),
                                 ('تكرار', self.duplicate_selected)]:
             button = QPushButton(label); button.clicked.connect(callback); toolbar.addWidget(button)
         self.ocr_button=QPushButton('OCR لهذه الصفحة');self.ocr_button.clicked.connect(self.ocr_requested.emit);toolbar.addWidget(self.ocr_button)
         self.undo_button = QPushButton('تراجع'); self.undo_button.clicked.connect(self.undo); toolbar.addWidget(self.undo_button)
         self.redo_button = QPushButton('إعادة'); self.redo_button.clicked.connect(self.redo); toolbar.addWidget(self.redo_button)
+        previous=QPushButton('الصفحة السابقة');previous.clicked.connect(lambda:self.navigate_page(-1));toolbar.addWidget(previous)
+        following=QPushButton('الصفحة التالية');following.clicked.connect(lambda:self.navigate_page(1));toolbar.addWidget(following)
         layout.addLayout(toolbar)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.canvas = EditCanvas(); self.canvas.region_selected.connect(self.pick_region)
@@ -587,6 +590,21 @@ class PageEditorDialog(QDialog):
         self.image=self.image.transformed(QTransform().rotate(90),Qt.TransformationMode.SmoothTransformation)
         self.mark_pending();self.status.setText('تم تدوير الصورة 90 درجة. عاينها أو طبّقها على الصفحة.')
 
+    def crop_image(self):
+        if self.image is None:
+            QMessageBox.information(self,'قص الصورة','أضف صورة أو اختر صورة بديلة أولًا.');return
+        value,ok=QInputDialog.getText(self,'قص الصورة','أدخل نسب القص من اليسار، أعلى، اليمين، أسفل. مثال: 10,5,10,5',text='0,0,0,0')
+        if not ok:return
+        try:
+            values=[float(part.strip()) for part in value.replace('،',',').split(',')]
+            if len(values)!=4 or any(number<0 or number>=90 for number in values) or values[0]+values[2]>=95 or values[1]+values[3]>=95:raise ValueError
+        except ValueError:
+            QMessageBox.warning(self,'قص الصورة','اكتب أربع نسب صحيحة، ويجب أن يتبقى جزء من الصورة.');return
+        left,top,right,bottom=values;w=self.image.width();h=self.image.height()
+        x=round(w*left/100);y=round(h*top/100);width=round(w*(100-left-right)/100);height=round(h*(100-top-bottom)/100)
+        self.image=self.image.copy(x,y,max(1,width),max(1,height));self.mark_pending()
+        self.status.setText('تم قص الصورة. يمكنك تغيير حجمها أو تدويرها ثم تطبيقها.')
+
     def image_opacity_changed(self,value):
         self.image_opacity=float(value)
         if self.image is not None:self.mark_pending()
@@ -661,6 +679,12 @@ class PageEditorDialog(QDialog):
     def redo(self):
         if self.future:
             self.history.append(self.data); self.data = self.future.pop(); self.reload()
+
+    def navigate_page(self,direction):
+        if self.pending or self.draft is not None:
+            try:self.commit(self.draft if self.draft is not None else self.make_change())
+            except Exception as exc:QMessageBox.warning(self,'تعذر الانتقال',str(exc));return
+        self.navigate_requested.emit(direction)
 
     def finish(self):
         if self.pending or self.draft is not None:

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from io import BytesIO
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject
+from pypdf.generic import NameObject, TextStringObject
 
 
 @dataclass(frozen=True)
@@ -111,4 +111,16 @@ def sanitize_pdf(data: bytes, *, remove_metadata: bool = True, remove_attachment
                 annotation=reference.get_object();action=annotation.get('/A')
                 if action and str(action.get_object().get('/S',''))=='/JavaScript':annotation.pop(NameObject('/A'),None)
         for field in (writer.get_fields() or {}).values():field.pop(NameObject('/AA'),None)
+    output=BytesIO();writer.write(output);writer.close();return output.getvalue()
+
+
+def repair_accessibility_basics(data: bytes, language: str = 'ar', title: str = 'VELLORA Document') -> bytes:
+    """Set safe language and title metadata without pretending to provide full PDF/UA tagging."""
+    language=(language or 'ar').strip()[:32];title=(title or 'VELLORA Document').strip()[:250]
+    reader=PdfReader(BytesIO(data),strict=False)
+    if reader.is_encrypted:raise ValueError('افتح المستند المحمي داخل VELLORA قبل إصلاح خصائص الوصول.')
+    writer=PdfWriter();writer.clone_document_from_reader(reader)
+    writer._root_object[NameObject('/Lang')]=TextStringObject(language)
+    metadata={str(key):str(value) for key,value in (reader.metadata or {}).items() if value is not None}
+    metadata['/Title']=title;writer.add_metadata(metadata)
     output=BytesIO();writer.write(output);writer.close();return output.getvalue()

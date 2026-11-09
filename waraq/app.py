@@ -37,7 +37,7 @@ from .templates import encode_template, decode_template, builtin_template
 from .professional import (add_attachment, attachment_bytes, list_attachments, remove_attachment,
                            add_form_field, export_page_images, extract_text, fill_form_fields,
                            inspect_signatures, list_form_fields, secure_redact_page, secure_redact_text)
-from .preflight import preflight_pdf, sanitize_pdf
+from .preflight import preflight_pdf, sanitize_pdf, repair_accessibility_basics
 from .reading import PageImage, SearchDock, OcrDialog, ReviewDock
 from .textlayout import Glyph, character_map, find_matches, normal_text, select_region
 from .ocr import find_tesseract, run_ocr, JobCancelled
@@ -1552,6 +1552,7 @@ class MainWindow(QMainWindow):
             editor.accepted.connect(self.finish_inline_edit)
             editor.rejected.connect(self.cancel_inline_edit)
             editor.ocr_requested.connect(lambda:self.ocr_page_from_editor(index))
+            editor.navigate_requested.connect(self.navigate_inline_edit)
             self.edit_button.setText('جارٍ التحرير')
             self.statusBar().showMessage('وضع التحرير المباشر: اختر النص أو الصورة من الصفحة، ثم عدّل الخصائص من اللوحة اليمنى.')
         except JobCancelled:pass
@@ -1567,6 +1568,18 @@ class MainWindow(QMainWindow):
         if changed:self.document.replace_page(index,editor.data)
         self.refresh(index)
         self.statusBar().showMessage('طُبّقت تعديلات الصفحة. اختر «حفظ نسخة» لحفظ المستند المعدّل.',12000)
+
+    def navigate_inline_edit(self,direction):
+        editor=self._page_editor
+        if editor is None:return
+        current=self._editing_page;target=current+direction
+        if target<0 or target>=len(self.document.pages):
+            self.statusBar().showMessage('لا توجد صفحة أخرى في هذا الاتجاه.',5000);return
+        if editor.data!=editor.initial_data:self.document.replace_page(current,editor.data)
+        self.stack.setCurrentWidget(self.splitter);self.stack.removeWidget(editor);editor.deleteLater()
+        self._page_editor=None;self._editing_page=-1;self.edit_button.setText('تعديل PDF')
+        self.refresh(target);self.pages.setCurrentRow(target)
+        QTimer.singleShot(0,self.edit_page_content)
 
     def ocr_page_from_editor(self,index):
         self.cancel_inline_edit()
@@ -1797,6 +1810,18 @@ class MainWindow(QMainWindow):
                 for issue in report.issues:items.addItem(f'{labels.get(issue.severity,issue.severity)} — {issue.message}')
             else:items.addItem('لم يكتشف الفحص مشكلات أساسية.')
             layout.addWidget(items);note=QLabel('هذا فحص بنيوي مساعد، وليس شهادة اعتماد PDF/A أو PDF/UA.');note.setWordWrap(True);layout.addWidget(note)
+            if any(issue.code in ('language','title') for issue in report.issues):
+                repair=QPushButton('إصلاح اللغة والعنوان…');layout.addWidget(repair)
+                def apply_repair():
+                    language,ok=QInputDialog.getItem(dialog,'لغة المستند','اختر اللغة الأساسية:',['العربية (ar)','الإنجليزية (en)','العربية والإنجليزية (ar-EG)'],0,False)
+                    if not ok:return
+                    title,ok=QInputDialog.getText(dialog,'عنوان المستند','عنوان واضح لقارئات الشاشة:',text=self.document_name.text())
+                    if not ok or not title.strip():return
+                    code={'العربية (ar)':'ar','الإنجليزية (en)':'en','العربية والإنجليزية (ar-EG)':'ar-EG'}[language]
+                    result=repair_accessibility_basics(self.assembled_bytes('إصلاح خصائص الوصول'),code,title)
+                    self.document.replace_document(result,title.strip()+'.pdf');self.refresh(self.pages.currentRow());dialog.accept()
+                    self.statusBar().showMessage('تم تعيين لغة المستند وعنوانه. لا يزال الوسم البنيوي الكامل يحتاج مراجعة متخصصة.',12000)
+                repair.clicked.connect(apply_repair)
             buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Close);buttons.rejected.connect(dialog.reject);buttons.accepted.connect(dialog.accept);layout.addWidget(buttons);dialog.exec()
         except JobCancelled:pass
         except Exception as exc:self.error(exc,exc)

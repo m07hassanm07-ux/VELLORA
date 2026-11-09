@@ -1,4 +1,4 @@
-# Validation of VELLORA 2.1.0
+# Validation of VELLORA 2.2.0
 
 Editing, runtime and setup validation: 22 October 2026. Host: Windows 11 x64, Python 3.12.14. Earlier conversion/browser observations from 0.2.0 on 21 October are explicitly retained below.
 

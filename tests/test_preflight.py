@@ -2,7 +2,7 @@ from io import BytesIO
 import unittest
 from pypdf import PdfReader,PdfWriter
 from pypdf.generic import DictionaryObject,NameObject,TextStringObject
-from waraq.preflight import preflight_pdf,sanitize_pdf
+from waraq.preflight import preflight_pdf,sanitize_pdf,repair_accessibility_basics
 
 
 class PreflightTests(unittest.TestCase):
@@ -18,6 +18,12 @@ class PreflightTests(unittest.TestCase):
         result=sanitize_pdf(data);reader=PdfReader(BytesIO(result))
         self.assertEqual(list(reader.attachment_list),[]);self.assertIsNone(reader.trailer['/Root'].get('/OpenAction'))
         self.assertFalse(reader.metadata)
+
+    def test_accessibility_basics_sets_language_and_title(self):
+        repaired=repair_accessibility_basics(self.fixture(),'ar','عنوان واضح')
+        reader=PdfReader(BytesIO(repaired))
+        self.assertEqual(str(reader.trailer['/Root']['/Lang']),'ar')
+        self.assertEqual(reader.metadata.title,'عنوان واضح')
 
 
 if __name__=='__main__':unittest.main()
