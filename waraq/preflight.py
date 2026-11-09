@@ -46,6 +46,7 @@ def preflight_pdf(data: bytes, password: str = '') -> PreflightReport:
     issues=[];fields=reader.get_fields() or {};signatures=sum(1 for field in fields.values() if str(field.get('/FT',''))=='/Sig')
     attachments=sum(1 for _ in reader.attachment_list)
     root=reader.trailer['/Root'];mark=root.get('/MarkInfo');tagged=bool(mark and mark.get_object().get('/Marked'))
+    language=str(root.get('/Lang','')).strip()
     metadata_stream=root.get('/Metadata');xmp=b''
     if metadata_stream:
         try:xmp=metadata_stream.get_object().get_data()
@@ -55,15 +56,26 @@ def preflight_pdf(data: bytes, password: str = '') -> PreflightReport:
     if attachments:issues.append(PreflightIssue('warning','attachments',f'يحتوي المستند على {attachments} مرفقًا.'))
     if signatures:issues.append(PreflightIssue('warning','signatures','إعادة الحفظ قد تبطل التوقيعات الرقمية الموجودة.'))
     if not tagged:issues.append(PreflightIssue('warning','accessibility','المستند غير معلّم كبنية PDF قابلة للوصول.'))
+    if not language:issues.append(PreflightIssue('warning','language','لغة المستند غير محددة؛ أضف لغة لتحسين قارئات الشاشة.'))
     if not pdfa:issues.append(PreflightIssue('info','pdfa','لا توجد دلالة موثوقة على توافق PDF/A.'))
     if not (reader.metadata and (reader.metadata.title or '').strip()):issues.append(PreflightIssue('info','title','عنوان المستند غير مُحدد.'))
-    unembedded=[];javascript=False
+    unembedded=[];javascript=False;blank_pages=[];image_pages=[]
     if root.get('/OpenAction') or root.get('/AA'):javascript=True
     names=root.get('/Names')
     if names and names.get_object().get('/JavaScript'):javascript=True
     for page_index,page in enumerate(reader.pages,1):
         resources=page.get('/Resources')
         fonts=resources.get_object().get('/Font') if resources else None
+        xobjects=resources.get_object().get('/XObject') if resources else None
+        has_image=False
+        for reference in (xobjects.get_object().values() if xobjects else []):
+            try:
+                if str(reference.get_object().get('/Subtype',''))=='/Image':has_image=True;break
+            except Exception:pass
+        try:page_text=(page.extract_text() or '').strip()
+        except Exception:page_text=''
+        if not page_text and not xobjects:blank_pages.append(page_index)
+        if has_image:image_pages.append(page_index)
         for name,font in (fonts.get_object().items() if fonts else []):
             if not _font_embedded(font):unembedded.append(f'{name} (صفحة {page_index})')
         if page.get('/AA'):javascript=True
@@ -71,6 +83,8 @@ def preflight_pdf(data: bytes, password: str = '') -> PreflightReport:
             annotation=reference.get_object();action=annotation.get('/A')
             if action and str(action.get_object().get('/S',''))=='/JavaScript':javascript=True
     if unembedded:issues.append(PreflightIssue('warning','fonts',f'{len(unembedded)} استخدام خط غير مضمّن بالكامل.'))
+    if blank_pages:issues.append(PreflightIssue('warning','blank_pages',f'صفحات فارغة محتملة: {", ".join(map(str,blank_pages[:12]))}.'))
+    if image_pages and not tagged:issues.append(PreflightIssue('info','image_alt',f'توجد صور في {len(image_pages)} صفحة، وقد تحتاج نصًا بديلًا لإمكانية الوصول.'))
     if javascript:issues.append(PreflightIssue('warning','javascript','يحتوي المستند على إجراءات أو JavaScript؛ راجعها قبل النشر.'))
     version=data[:16].splitlines()[0].decode('ascii','replace').replace('%PDF-','') if data.startswith(b'%PDF-') else 'unknown'
     return PreflightReport(version,len(reader.pages),encrypted,attachments,len(fields),signatures,tagged,pdfa,tuple(issues))

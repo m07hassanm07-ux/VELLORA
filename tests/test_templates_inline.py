@@ -23,7 +23,7 @@ class TemplateAndInlineTests(unittest.TestCase):
         with self.assertRaises(ValueError):decode_template(b'not a template')
 
     def test_builtin_business_templates_are_single_page_and_editable_text(self):
-        for kind in ('report','letter','meeting'):
+        for kind in ('report','letter','meeting','invoice','quote','certificate','contract'):
             name,pdf=builtin_template(kind);reader=PdfReader(BytesIO(pdf))
             self.assertTrue(name);self.assertEqual(len(reader.pages),1)
             self.assertTrue((reader.pages[0].extract_text() or '').strip())

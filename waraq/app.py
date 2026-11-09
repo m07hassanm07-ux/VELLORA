@@ -308,6 +308,8 @@ class CreateDocumentDialog(QDialog):
         entries=[('صفحة فارغة A4','مستند فارغ عمودي','blank-a4'),('صفحة فارغة أفقية','A4 بالاتجاه الأفقي','blank-landscape'),
                  ('صفحة Letter','مقاس المراسلات الأمريكي','blank-letter'),('تقرير عمل','قالب تقرير قابل للتحرير','report'),
                  ('خطاب رسمي','قالب خطاب وهوية مؤسسة','letter'),('محضر اجتماع','الحضور والجدول والقرارات','meeting'),
+                 ('فاتورة احترافية','بنود وإجماليات وضريبة','invoice'),('عرض سعر','خدمات وأسعار وشروط','quote'),
+                 ('شهادة تقدير','شهادة قابلة لتخصيص الاسم','certificate'),('اتفاقية عمل','أطراف وبنود وتوقيعات','contract'),
                  ('قالب محفوظ…','فتح قالب .waraqt سبق حفظه','saved'),('إنشاء من ملفات…','صور أو Office أو PDF','files')]
         for label,description,value in entries:
             item=QListWidgetItem(f'{label}\n{description}');item.setData(Qt.ItemDataRole.UserRole,value);item.setSizeHint(QSize(0,48));self.choices.addItem(item)
@@ -419,6 +421,8 @@ class MainWindow(QMainWindow):
         header = QFrame(objectName="header")
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(22, 12, 22, 12)
+        brand_mark=QLabel();brand_mark.setPixmap(self.brand_icon().pixmap(46,46));brand_mark.setFixedSize(50,50)
+        brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter);header_layout.addWidget(brand_mark)
         brand = QLabel("VELLORA", objectName="brand")
         brand_column = QVBoxLayout()
         brand_column.setSpacing(1)
@@ -497,18 +501,19 @@ class MainWindow(QMainWindow):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setContentsMargins(28,28,28,28)
         card=QFrame(objectName='emptyCard');card.setMaximumWidth(820);card_layout=QVBoxLayout(card);card_layout.setContentsMargins(52,34,52,38);card_layout.setSpacing(14)
-        mark = QLabel("و", objectName="emptyMark")
-        mark.setFixedSize(86, 86)
+        mark = QLabel(objectName="emptyMark")
+        mark.setPixmap(self.brand_icon().pixmap(92,92))
+        mark.setFixedSize(98, 98)
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(mark, 0, Qt.AlignmentFlag.AlignHCenter)
-        title = QLabel("ابدأ العمل على ملفات PDF", objectName="emptyTitle")
+        title = QLabel("ابدأ مع VELLORA", objectName="emptyTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(title)
         text = QLabel("افتح مستندًا، أنشئ ملفًا جديدًا، أو اجمع عدة ملفات في مساحة عمل واحدة.\nتظل مستنداتك محلية على هذا الجهاز.", objectName="emptyText")
         text.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(text)
         actions=QGridLayout();actions.setHorizontalSpacing(10);actions.setVerticalSpacing(5)
-        start_items=[('فتح ملف PDF','اختيار مستند من الجهاز',self.open_dialog,True),('إنشاء PDF','من صورة أو ملف Office',self.create_pdf_dialog,False),('دمج ملفات','ترتيب عدة ملفات ودمجها',self.merge_dialog,False)]
+        start_items=[('فتح ملف PDF','اختيار مستند من الجهاز',self.open_dialog,True),('إنشاء PDF','صفحة فارغة أو قالب احترافي',self.create_pdf_dialog,False),('دمج ملفات','ترتيب عدة ملفات ودمجها',self.merge_dialog,False)]
         for column,(name,hint_text,handler,primary) in enumerate(start_items):
             button=self.button(name,handler,primary=primary);button.setMinimumWidth(180);actions.addWidget(button,0,column)
             hint_label=QLabel(hint_text,objectName='startHint');hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter);actions.addWidget(hint_label,1,column)
@@ -1507,7 +1512,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:self.error(exc)
 
     def insert_template(self):
-        choices=['تقرير عمل','خطاب رسمي','محضر اجتماع','فتح قالب محفوظ…']
+        choices=['تقرير عمل','خطاب رسمي','محضر اجتماع','فاتورة احترافية','عرض سعر','شهادة تقدير','اتفاقية عمل','فتح قالب محفوظ…']
         choice,ok=QInputDialog.getItem(self,'قوالب VELLORA','اختر قالبًا لإضافته كصفحة جديدة:',choices,0,False)
         if not ok:return
         try:
@@ -1516,7 +1521,7 @@ class MainWindow(QMainWindow):
                 if not path:return
                 name,data=decode_template(Path(path).read_bytes())
             else:
-                name,data=builtin_template({'تقرير عمل':'report','خطاب رسمي':'letter','محضر اجتماع':'meeting'}[choice])
+                name,data=builtin_template({'تقرير عمل':'report','خطاب رسمي':'letter','محضر اجتماع':'meeting','فاتورة احترافية':'invoice','عرض سعر':'quote','شهادة تقدير':'certificate','اتفاقية عمل':'contract'}[choice])
             index=len(self.document.pages);self.document.import_bytes(name+'.pdf',data)
             self.refresh(index);self.statusBar().showMessage(f'أُدرج القالب: {name}',10000)
         except Exception as exc:self.error(exc)
@@ -1891,6 +1896,7 @@ class MainWindow(QMainWindow):
     def print_document(self):
         if not self.document.pages:
             return
+        if not self.confirm_print_preflight():return
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         printer.setResolution(300)
         printer.setDocName(self.document_name.text())
@@ -1924,6 +1930,19 @@ class MainWindow(QMainWindow):
             self.error(exc)
         finally:
             progress.close()
+
+    def confirm_print_preflight(self):
+        try:report=preflight_pdf(self.assembled_bytes('فحص سريع قبل الطباعة'))
+        except JobCancelled:return False
+        except Exception:return True
+        important=[issue for issue in report.issues if issue.code in ('fonts','blank_pages')]
+        if not important:return True
+        box=QMessageBox(self);box.setIcon(QMessageBox.Icon.Warning);box.setWindowTitle('فحص قبل الطباعة')
+        box.setText('راجع النقاط التالية قبل إرسال المستند إلى الطابعة:')
+        box.setInformativeText('\n'.join('• '+issue.message for issue in important))
+        proceed=box.addButton('متابعة الطباعة',QMessageBox.ButtonRole.AcceptRole)
+        box.addButton('إلغاء ومراجعة المستند',QMessageBox.ButtonRole.RejectRole)
+        box.exec();return box.clickedButton()==proceed
 
     def print_batch(self):
         paths,_=QFileDialog.getOpenFileNames(self,"اختيار ملفات PDF للطباعة الدفعية","","PDF (*.pdf)")
@@ -2085,6 +2104,12 @@ def main():
     app.setApplicationName("VELLORA")
     app.setApplicationVersion(__version__)
     app.setOrganizationName("Vellora")
+    current_settings=QSettings()
+    if not current_settings.value('migration/waraqa_complete',False,type=bool):
+        legacy_settings=QSettings('Waraqa','ورقة')
+        for key in legacy_settings.allKeys():
+            if not current_settings.contains(key):current_settings.setValue(key,legacy_settings.value(key))
+        current_settings.setValue('migration/waraqa_complete',True);current_settings.sync()
     app.setStyle("Fusion")
     from .logging_setup import configure_logging
     configure_logging()

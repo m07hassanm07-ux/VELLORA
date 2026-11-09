@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QImageReader, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QImage, QImageReader, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout,
     QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QInputDialog,
@@ -186,7 +186,8 @@ class PageEditorDialog(QDialog):
         self.initial_data = self.data
         self.history, self.future = [], []
         self.mode = 'select'
-        self.image = None; self.table_rows = None
+        self.image = None; self.image_opacity = 1.0; self.table_rows = None
+        self.element_clipboard = None
         self.loading = False
         self.draft = None
         self.pending = False
@@ -195,7 +196,10 @@ class PageEditorDialog(QDialog):
         note.setWordWrap(True); layout.addWidget(note)
         toolbar = QHBoxLayout()
         for label, callback in [('تحديد عنصر', self.select_mode), ('نص جديد', self.new_text), ('إضافة صورة…', self.choose_image),
-                                ('استبدال الصورة…', self.replace_selected_image), ('إدراج جدول…', self.new_table)]:
+                                ('استبدال الصورة…', self.replace_selected_image), ('إدراج جدول…', self.new_table),
+                                ('تدوير صورة', self.rotate_image),
+                                ('نسخ عنصر', self.copy_selected_element), ('لصق عنصر', self.paste_element),
+                                ('تكرار', self.duplicate_selected)]:
             button = QPushButton(label); button.clicked.connect(callback); toolbar.addWidget(button)
         self.ocr_button=QPushButton('OCR لهذه الصفحة');self.ocr_button.clicked.connect(self.ocr_requested.emit);toolbar.addWidget(self.ocr_button)
         self.undo_button = QPushButton('تراجع'); self.undo_button.clicked.connect(self.undo); toolbar.addWidget(self.undo_button)
@@ -241,6 +245,8 @@ class PageEditorDialog(QDialog):
         self.alignment = QComboBox()
         for label, value in [('تلقائي', 'auto'), ('يمين', 'right'), ('وسط', 'center'), ('يسار', 'left')]: self.alignment.addItem(label, value)
         self.alignment.currentIndexChanged.connect(self.mark_pending); form.addRow('المحاذاة', self.alignment)
+        self.opacity=QDoubleSpinBox();self.opacity.setRange(.1,1);self.opacity.setSingleStep(.1);self.opacity.setValue(1)
+        self.opacity.setDecimals(1);self.opacity.valueChanged.connect(self.image_opacity_changed);form.addRow('شفافية الصورة',self.opacity)
         self.geometry = []
         for label, default in [('من اليسار %', 10), ('من أعلى %', 10), ('العرض %', 70), ('الارتفاع %', 12)]:
             spin = QDoubleSpinBox(); spin.setRange(0, 100); spin.setDecimals(2); spin.setValue(default)
@@ -262,7 +268,7 @@ class PageEditorDialog(QDialog):
         quick.addWidget(QLabel('الخط')); quick.addWidget(self.font, 2)
         quick.addWidget(QLabel('الحجم')); quick.addWidget(self.size)
         quick.addWidget(self.bold); quick.addWidget(self.color)
-        quick.addWidget(self.alignment); quick.addWidget(self.auto_fit)
+        quick.addWidget(self.alignment); quick.addWidget(self.auto_fit);quick.addWidget(QLabel('شفافية الصورة'));quick.addWidget(self.opacity)
         quick.addStretch(); quick.addWidget(preview);quick.addWidget(self.before_after_button);quick.addWidget(self.delete_button); quick.addWidget(self.apply_button)
         layout.addLayout(quick)
         # Retain non-visual selection/geometry controls as state holders without
@@ -280,7 +286,8 @@ class PageEditorDialog(QDialog):
         self.shortcuts = []
         for keys, callback in [('Ctrl+Return', self.apply_change), ('Ctrl+Enter', self.apply_change),
                                ('Ctrl+Z', self.undo), ('Ctrl+Shift+Z', self.redo),
-                               ('Ctrl+Y', self.redo), ('Escape', self.discard_direct_edit)]:
+                               ('Ctrl+Y', self.redo), ('Ctrl+D', self.duplicate_selected),
+                               ('Escape', self.discard_direct_edit)]:
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             shortcut.activated.connect(callback); self.shortcuts.append(shortcut)
@@ -322,6 +329,42 @@ class PageEditorDialog(QDialog):
 
     def selected_chars(self):
         return tuple(dict.fromkeys(index for entry in self.selected_entries() for index in entry.chars))
+
+    def copy_selected_element(self):
+        selected=self.selected_entries()
+        if not selected or any(entry.kind!='text' for entry in selected):
+            QMessageBox.information(self,'نسخ عنصر','حدد نصًا أو فقرة قابلة للتحرير أولًا.');return
+        rect=self.rect()
+        self.element_clipboard={'text':self.text.toPlainText(),'rect':QRectF(rect),
+            'font':self.font.currentFont().family(),'size':self.size.value(),'bold':self.bold.isChecked(),
+            'color':self.color.currentData(),'alignment':self.alignment.currentData()}
+        self.status.setText('تم نسخ العنصر. استخدم «لصق عنصر» أو Ctrl+D لإنشاء نسخة داخل الصفحة.')
+
+    def paste_element(self):
+        item=self.element_clipboard
+        if not item:
+            QMessageBox.information(self,'لصق عنصر','انسخ عنصرًا نصيًا داخل المحرر أولًا.');return
+        self.loading=True;self.objects.clearSelection();self.loading=False
+        self.canvas.set_page(self.data);self.direct_editor=None;self.direct_proxy=None;self.direct_toolbar_proxy=None
+        self.mode='text';self.image=None;self.text.setPlainText(item['text'])
+        self.font.setCurrentFont(QFont(item['font']));self.size.setValue(item['size']);self.bold.setChecked(item['bold'])
+        color_index=self.color.findData(item['color'])
+        if color_index>=0:self.color.setCurrentIndex(color_index)
+        self.alignment.setCurrentIndex(max(0,self.alignment.findData(item['alignment'])))
+        rect=QRectF(item['rect']);rect.translate(12,12)
+        if rect.right()>self.width:rect.moveRight(self.width)
+        if rect.bottom()>self.height:rect.moveBottom(self.height)
+        self.set_rect(rect);self.open_direct_editor();self.pending=True
+        self.status.setText('تم لصق نسخة جديدة. حرّكها أو عدّلها ثم انقر خارجها للحفظ.')
+
+    def duplicate_selected(self):
+        if not self.selected_entries():
+            return
+        self.copy_selected_element()
+        if self.direct_editor is not None and self.pending:
+            try:self.commit(self.draft if self.draft is not None else self.make_change())
+            except Exception as exc:QMessageBox.warning(self,'تعذر التكرار',str(exc));return
+        if self.element_clipboard:self.paste_element()
 
     def set_rect(self, rect):
         self.loading = True
@@ -523,7 +566,7 @@ class PageEditorDialog(QDialog):
         image = reader.read()
         if image.isNull():
             QMessageBox.warning(self, 'الصورة', 'تعذر قراءة الصورة.'); return
-        self.clear_draft(); self.objects.clearSelection(); self.mode = 'image'; self.image = image
+        self.clear_draft(); self.objects.clearSelection(); self.mode = 'image'; self.image = image;self.image_opacity=1;self.opacity.setValue(1)
         self.set_rect(QRectF(self.width*.1, self.height*.1, self.width*.4, self.height*.3))
         self.status.setText(f'الصورة: {Path(path).name}. ارسم مكانها ثم عاين التعديل؛ ستُحفظ نسبة أبعادها.')
 
@@ -535,8 +578,23 @@ class PageEditorDialog(QDialog):
         if not path:return
         reader=QImageReader(path);reader.setAutoTransform(True);image=reader.read()
         if image.isNull():QMessageBox.warning(self,'الصورة','تعذر قراءة الصورة.');return
-        self.clear_draft();self.mode='replace_image';self.image=image
+        self.clear_draft();self.mode='replace_image';self.image=image;self.image_opacity=1;self.opacity.setValue(1)
         self.status.setText('تم اختيار الصورة البديلة. حرّك الإطار أو غيّر حجمه ثم اضغط «تطبيق على الصفحة».')
+
+    def rotate_image(self):
+        if self.image is None:
+            QMessageBox.information(self,'تدوير الصورة','أضف صورة أو اختر صورة بديلة أولًا.');return
+        self.image=self.image.transformed(QTransform().rotate(90),Qt.TransformationMode.SmoothTransformation)
+        self.mark_pending();self.status.setText('تم تدوير الصورة 90 درجة. عاينها أو طبّقها على الصفحة.')
+
+    def image_opacity_changed(self,value):
+        self.image_opacity=float(value)
+        if self.image is not None:self.mark_pending()
+
+    def processed_image(self):
+        if self.image is None or self.image_opacity>=.999:return self.image
+        result=QImage(self.image.size(),QImage.Format.Format_ARGB32_Premultiplied);result.fill(Qt.GlobalColor.transparent)
+        painter=QPainter(result);painter.setOpacity(self.image_opacity);painter.drawImage(0,0,self.image);painter.end();return result
 
     def new_table(self):
         raw,ok=QInputDialog.getMultiLineText(self,'إدراج أو تحرير جدول','اكتب صفوف الجدول؛ افصل الخلايا بزر Tab. يمكنك إضافة الأسطر أو حذفها وإعادة ترتيبها:','العنوان 1\tالعنوان 2\nقيمة 1\tقيمة 2')
@@ -558,7 +616,7 @@ class PageEditorDialog(QDialog):
             raise ValueError('لتغيير الصورة احذفها ثم أضف الصورة الجديدة. استبدال النص يتطلب تحديد نصوص فقط.')
         rect = self.rect()
         return edit_page(self.data, indexes, text=None if self.mode in ('image','replace_image') else self.text.toPlainText(),
-            image=self.image if self.mode in ('image','replace_image') else None,
+            image=self.processed_image() if self.mode in ('image','replace_image') else None,
             rect=(rect.x(), rect.y(), rect.width(), rect.height()), size=self.size.value(),
             family=self.font.currentFont().family(), color=self.color.currentData(), bold=self.bold.isChecked(),
             alignment=self.alignment.currentData(), selected_chars=self.selected_chars() if self.mode == 'select' else None,
