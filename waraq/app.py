@@ -10,8 +10,8 @@ import logging
 import os
 import json
 
-from PySide6.QtCore import Qt, QSize, QTimer, Signal, QItemSelectionModel, QRect, QSettings
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPixmap
+from PySide6.QtCore import Qt, QSize, QTimer, Signal, QItemSelectionModel, QRect, QSettings, QEvent, QPointF
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPixmap, QPen
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog, QPrintPreviewDialog, QAbstractPrintDialog
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
@@ -43,6 +43,7 @@ from .reading import PageImage, SearchDock, OcrDialog, ReviewDock
 from .textlayout import Glyph, character_map, find_matches, normal_text, select_region
 from .ocr import find_tesseract, run_ocr, JobCancelled
 from .projects import snapshot, restore, encode_snapshot, decode_snapshot, RecoveryStore, LOCKED
+from .signature_store import SignatureStore
 from .tasks import TaskThread,run_task,process_job
 from .render_service import ProcessRenderer
 from .compare import compare_pdfs
@@ -357,13 +358,72 @@ class CreateDocumentDialog(QDialog):
         self.pages.setEnabled(self.kind().startswith('blank'))
 
 
+class SignatureCanvas(QWidget):
+    changed=Signal()
+    def __init__(self,parent=None):
+        super().__init__(parent);self.setMinimumSize(620,240);self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents,True)
+        self.setCursor(Qt.CursorShape.CrossCursor);self.ink=QColor('#172a32');self.stroke_width=3.2;self.last=None;self._has_ink=False
+        self.image=QImage(1240,480,QImage.Format.Format_ARGB32_Premultiplied);self.image.fill(Qt.GlobalColor.transparent)
+
+    def clear(self):self.image.fill(Qt.GlobalColor.transparent);self.last=None;self._has_ink=False;self.update();self.changed.emit()
+    def has_ink(self):return self._has_ink
+    def point(self,position):return QPointF(position.x()*self.image.width()/max(1,self.width()),position.y()*self.image.height()/max(1,self.height()))
+    def draw_to(self,position):
+        current=self.point(position);painter=QPainter(self.image);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen=QPen(self.ink,self.stroke_width*self.image.width()/max(1,self.width()),Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin);painter.setPen(pen)
+        if self.last is None:painter.drawPoint(current)
+        else:painter.drawLine(self.last,current)
+        painter.end();self.last=current;self._has_ink=True;self.update();self.changed.emit()
+    def mousePressEvent(self,event):
+        if event.button()==Qt.MouseButton.LeftButton:self.last=None;self.draw_to(event.position());event.accept();return
+        super().mousePressEvent(event)
+    def mouseMoveEvent(self,event):
+        if event.buttons()&Qt.MouseButton.LeftButton:self.draw_to(event.position());event.accept();return
+        super().mouseMoveEvent(event)
+    def mouseReleaseEvent(self,event):
+        if event.button()==Qt.MouseButton.LeftButton:self.draw_to(event.position());self.last=None;event.accept();return
+        super().mouseReleaseEvent(event)
+    def event(self,event):
+        if event.type() in (QEvent.Type.TouchBegin,QEvent.Type.TouchUpdate,QEvent.Type.TouchEnd):
+            points=event.points()
+            if points:
+                if event.type()==QEvent.Type.TouchBegin:self.last=None
+                self.draw_to(points[0].position())
+                if event.type()==QEvent.Type.TouchEnd:self.last=None
+            event.accept();return True
+        return super().event(event)
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.fillRect(self.rect(),QColor('white'));painter.setPen(QPen(QColor('#d5dce1'),1,Qt.PenStyle.DashLine));painter.drawLine(20,self.height()-45,self.width()-20,self.height()-45)
+        painter.drawImage(self.rect(),self.image);painter.end()
+
+
+class DrawSignatureDialog(QDialog):
+    def __init__(self,parent=None):
+        super().__init__(parent);self.setWindowTitle('رسم توقيع جديد');self.resize(720,390)
+        layout=QVBoxLayout(self);layout.addWidget(QLabel('ارسم بالماوس أو القلم أو شاشة اللمس. لا تضف بيانات سرية غير لازمة إلى شكل التوقيع.'))
+        self.canvas=SignatureCanvas();layout.addWidget(self.canvas,1)
+        row=QHBoxLayout();clear=QPushButton('مسح وإعادة الرسم');clear.clicked.connect(self.canvas.clear);row.addWidget(clear);row.addStretch();layout.addLayout(row)
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('استخدام وحفظ التوقيع');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
+        buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
+    def accept(self):
+        if not self.canvas.has_ink():QMessageBox.warning(self,'رسم التوقيع','ارسم التوقيع أولًا.');return
+        super().accept()
+    def image(self):return self.canvas.image.copy()
+
+
 class VisualSignatureDialog(QDialog):
     """Choose a handwritten signature image and an optional organization logo."""
-    def __init__(self,parent=None):
-        super().__init__(parent);self.setWindowTitle('إضافة توقيع مرئي');self.setMinimumWidth(540)
+    def __init__(self,parent=None,store=None):
+        super().__init__(parent);self.store=store or SignatureStore();self.saved_image=QImage();self.setWindowTitle('إضافة توقيع مرئي');self.setMinimumWidth(620)
         layout=QVBoxLayout(self)
-        note=QLabel('اختر صورة توقيع مكتوب باليد (يفضل PNG بخلفية شفافة)، ويمكن إضافة شعار بجواره. لن يضيف VELLORA اسمًا أو تاريخًا تلقائيًا.')
+        note=QLabel('اختر توقيعًا محفوظًا، ارسم توقيعًا جديدًا، أو استورد صورة. تحفظ المكتبة مشفّرة لحساب Windows الحالي. ويمكن إضافة شعار بجوار التوقيع.')
         note.setWordWrap(True);layout.addWidget(note)
+        self.saved=QListWidget();self.saved.setMaximumHeight(125);self.saved.currentItemChanged.connect(self.select_saved);layout.addWidget(self.saved)
+        saved_tools=QHBoxLayout()
+        for label,callback in [('رسم توقيع جديد…',self.draw_signature),('حفظ الصورة بالمكتبة',self.save_imported),('إعادة تسمية',self.rename_saved),('حذف',self.delete_saved)]:
+            button=QPushButton(label);button.clicked.connect(callback);saved_tools.addWidget(button)
+        layout.addLayout(saved_tools)
         form=QFormLayout();self.signature=QLineEdit();self.signature.setReadOnly(True);self.logo=QLineEdit();self.logo.setReadOnly(True)
         signature_row=QHBoxLayout();signature_row.addWidget(self.signature,1);choose_signature=QPushButton('اختيار صورة التوقيع…');choose_signature.clicked.connect(lambda:self.choose(self.signature));signature_row.addWidget(choose_signature)
         logo_row=QHBoxLayout();logo_row.addWidget(self.logo,1);choose_logo=QPushButton('اختيار الشعار…');choose_logo.clicked.connect(lambda:self.choose(self.logo));logo_row.addWidget(choose_logo)
@@ -371,15 +431,58 @@ class VisualSignatureDialog(QDialog):
         self.preview=QLabel('ستظهر المعاينة هنا');self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter);self.preview.setMinimumHeight(150);self.preview.setStyleSheet('border:1px solid #84919a;background:white;color:#566b79;');layout.addWidget(self.preview)
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText('اختيار الموضع على الصفحة');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
-        buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
+        buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons);self.reload_saved()
+
+    def reload_saved(self,select_id=None):
+        self.saved.clear()
+        try:items=self.store.list()
+        except Exception as exc:QMessageBox.warning(self,'مكتبة التوقيعات',str(exc));items=[]
+        for entry in items:
+            item=QListWidgetItem(entry['name']);item.setData(Qt.ItemDataRole.UserRole,entry['id']);self.saved.addItem(item)
+            if entry['id']==select_id:self.saved.setCurrentItem(item)
+
+    def select_saved(self,current,previous=None):
+        if current is None:return
+        try:self.saved_image=self.store.image(current.data(Qt.ItemDataRole.UserRole));self.signature.clear();self.update_preview()
+        except Exception as exc:QMessageBox.warning(self,'مكتبة التوقيعات',str(exc))
+
+    def draw_signature(self):
+        dialog=DrawSignatureDialog(self)
+        if dialog.exec()!=QDialog.DialogCode.Accepted:return
+        name,ok=QInputDialog.getText(self,'حفظ التوقيع','اسم التوقيع في المكتبة:')
+        if not ok:return
+        try:identifier=self.store.save(name,dialog.image());self.reload_saved(identifier)
+        except Exception as exc:QMessageBox.warning(self,'حفظ التوقيع',str(exc))
+
+    def save_imported(self):
+        image=QImage(self.signature.text()) if self.signature.text() else QImage()
+        if image.isNull():QMessageBox.information(self,'حفظ التوقيع','اختر صورة توقيع أولًا.');return
+        name,ok=QInputDialog.getText(self,'حفظ التوقيع','اسم التوقيع في المكتبة:')
+        if not ok:return
+        try:identifier=self.store.save(name,image);self.reload_saved(identifier)
+        except Exception as exc:QMessageBox.warning(self,'حفظ التوقيع',str(exc))
+
+    def rename_saved(self):
+        item=self.saved.currentItem()
+        if item is None:return
+        name,ok=QInputDialog.getText(self,'إعادة تسمية التوقيع','الاسم الجديد:',text=item.text())
+        if not ok:return
+        try:self.store.rename(item.data(Qt.ItemDataRole.UserRole),name);self.reload_saved(item.data(Qt.ItemDataRole.UserRole))
+        except Exception as exc:QMessageBox.warning(self,'إعادة التسمية',str(exc))
+
+    def delete_saved(self):
+        item=self.saved.currentItem()
+        if item is None:return
+        if QMessageBox.question(self,'حذف التوقيع',f'حذف «{item.text()}» من المكتبة المشفرة؟')!=QMessageBox.StandardButton.Yes:return
+        try:self.store.delete(item.data(Qt.ItemDataRole.UserRole));self.saved_image=QImage();self.reload_saved();self.update_preview()
+        except Exception as exc:QMessageBox.warning(self,'حذف التوقيع',str(exc))
 
     def choose(self,target):
         path,_=QFileDialog.getOpenFileName(self,'اختيار صورة','','صور (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)')
-        if path:target.setText(path);self.update_preview()
+        if path:target.setText(path);self.saved_image=QImage();self.saved.clearSelection();self.update_preview()
 
     def signature_image(self):
-        if not self.signature.text():return QImage()
-        signature=QImage(self.signature.text())
+        signature=self.saved_image if not self.saved_image.isNull() else QImage(self.signature.text()) if self.signature.text() else QImage()
         if signature.isNull():return signature
         logo=QImage(self.logo.text()) if self.logo.text() else QImage()
         if logo.isNull():return signature

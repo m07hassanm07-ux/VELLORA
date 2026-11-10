@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication, QStackedWidget
 from waraq.templates import encode_template, decode_template, builtin_template
 from waraq.editor_dialog import PageEditorDialog
 from waraq.app import MainWindow, CreateDocumentDialog, VisualSignatureDialog
+from waraq.signature_store import SignatureStore
 from PySide6.QtGui import QImage, QColor
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -50,7 +51,7 @@ class TemplateAndInlineTests(unittest.TestCase):
             logo=QImage(40,70,QImage.Format.Format_ARGB32);logo.fill(QColor('#c9343e'))
             signature_path=Path(folder)/'signature.png';logo_path=Path(folder)/'logo.png'
             self.assertTrue(signature.save(str(signature_path)));self.assertTrue(logo.save(str(logo_path)))
-            dialog=VisualSignatureDialog();dialog.signature.setText(str(signature_path));dialog.logo.setText(str(logo_path))
+            dialog=VisualSignatureDialog(store=SignatureStore(Path(folder)/'signatures.vsig'));dialog.signature.setText(str(signature_path));dialog.logo.setText(str(logo_path))
             combined=dialog.signature_image();self.assertFalse(combined.isNull())
             self.assertEqual(combined.height(),70);self.assertGreater(combined.width(),160);dialog.close()
 

@@ -15,7 +15,7 @@ SetCompressor /SOLID lzma
 BrandingText "VELLORA — Professional PDF Studio"
 ShowInstDetails show
 ShowUninstDetails show
-VIProductVersion "2.5.0.0"
+VIProductVersion "2.6.0.0"
 VIAddVersionKey "ProductName" "VELLORA"
 VIAddVersionKey "FileDescription" "VELLORA PDF Studio Installer"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
