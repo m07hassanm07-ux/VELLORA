@@ -57,6 +57,8 @@ class TemplateAndInlineTests(unittest.TestCase):
 
     def test_main_window_enters_and_leaves_inline_edit_mode(self):
         window=MainWindow();window.document.import_bytes('blank.pdf',blank_page());window.refresh()
+        self.assertTrue(window.sidebar.isHidden());self.assertTrue(window.compact_tools.isHidden())
+        window.toggle_compact_tools();self.assertFalse(window.compact_tools.isHidden());window.toggle_compact_tools()
         window.edit_page_content();self.assertIsNotNone(window._page_editor)
         self.assertIs(window.stack.currentWidget(),window._page_editor)
         window.cancel_inline_edit();self.assertIsNone(window._page_editor)

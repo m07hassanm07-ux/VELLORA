@@ -92,6 +92,9 @@ QScrollArea { border: none; background: #e3e5e8; }
 QWidget#previewSurface { background: #e3e5e8; }
 QLabel#pageImage { background: white; border: 1px solid #bfc5cd; }
 QFrame#viewerBar { background: #ffffff; border-bottom: 1px solid #d8dde4; }
+QFrame#compactTools { background: #ffffff; border-bottom: 1px solid #d8dde4; }
+QPushButton#compactAction { border: none; background: transparent; padding: 5px 9px; min-height: 18px; }
+QPushButton#compactAction:hover { background: #f8e9eb; color: #a52c35; }
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background: white; color: #1f2937; border: 1px solid #cfd5dd; border-radius: 5px; padding: 6px; min-height: 20px; }
 QStatusBar { background: #ffffff; border-top: 1px solid #d8dde4; color: #647184; }
 QFrame#emptyCard { background: #ffffff; border: 1px solid #d9dee5; border-radius: 14px; }
@@ -592,17 +595,13 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         header = QFrame(objectName="header")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(22, 12, 22, 12)
-        brand_mark=QLabel();brand_mark.setPixmap(self.brand_icon().pixmap(46,46));brand_mark.setFixedSize(50,50)
+        header_layout.setContentsMargins(14, 5, 14, 5);header_layout.setSpacing(6)
+        brand_mark=QLabel();brand_mark.setPixmap(self.brand_icon().pixmap(30,30));brand_mark.setFixedSize(34,34)
         brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter);header_layout.addWidget(brand_mark)
         brand = QLabel("VELLORA", objectName="brand")
-        brand_column = QVBoxLayout()
-        brand_column.setSpacing(1)
-        brand_column.addWidget(brand)
-        brand_column.addWidget(QLabel("Shape Every Document", objectName="tagline"))
-        header_layout.addLayout(brand_column)
+        brand.setStyleSheet('font-size:16pt;');header_layout.addWidget(brand)
         header_layout.addStretch()
-        header_layout.addWidget(QLabel("محلي بالكامل  •  مفتوح المصدر", objectName="badge"))
+        self.tools_toggle=self.button('الأدوات',self.toggle_compact_tools);self.tools_toggle.setObjectName('headerAction');self.tools_toggle.setToolTip('إظهار أو إخفاء أدوات التنظيم والتحرير');header_layout.addWidget(self.tools_toggle)
         open_button = self.button("فتح PDF", self.open_dialog, primary=True)
         open_button.setToolTip("فتح مستند جديد · Ctrl+O")
         header_layout.addWidget(open_button)
@@ -619,37 +618,32 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.save_button)
         layout.addWidget(header)
 
-        tools = QFrame(objectName="tools")
-        tool_layout = QHBoxLayout(tools)
-        tool_layout.setContentsMargins(16, 5, 16, 5);tool_layout.setSpacing(4)
-        groups=[('تنظيم الصفحات',[("add","دمج ملفات",self.merge_dialog),("extract","استخراج",self.extract_pages),("split","تقسيم",self.split_document)]),
-                ('تحرير المحتوى',[("text","نص وعلامة مائية",self.add_text),("number","ترقيم",self.add_numbers),("templates","قوالب",self.insert_template)]),
-                ('إنشاء واستيراد',[("web","صفحة ويب",self.import_web)])]
-        for group_title,items in groups:
-            group=QFrame(objectName='toolGroup');column=QVBoxLayout(group);column.setContentsMargins(8,2,8,2);column.setSpacing(1)
-            row=QHBoxLayout();row.setSpacing(2)
-            for key,title,handler in items:
-                self.buttons[key]=self.button(title,handler);self.buttons[key].setObjectName('toolButton');row.addWidget(self.buttons[key])
-            column.addLayout(row);label=QLabel(group_title,objectName='toolGroupTitle');label.setAlignment(Qt.AlignmentFlag.AlignCenter);column.addWidget(label)
-            tool_layout.addWidget(group)
+        self.compact_tools = QFrame(objectName="compactTools")
+        tool_layout = QHBoxLayout(self.compact_tools)
+        tool_layout.setContentsMargins(10, 3, 10, 3);tool_layout.setSpacing(1)
+        items=[("add","دمج",self.merge_dialog),("extract","استخراج",self.extract_pages),("split","تقسيم",self.split_document),
+               ("text","إضافة نص",self.add_text),("number","ترقيم",self.add_numbers),("templates","قوالب",self.insert_template),("web","استيراد ويب",self.import_web)]
+        for key,title,handler in items:
+            self.buttons[key]=self.button(title,handler);self.buttons[key].setObjectName('compactAction');tool_layout.addWidget(self.buttons[key])
         tool_layout.addStretch()
         self.undo_button = self.button("تراجع", self.undo)
         self.redo_button = self.button("إعادة", self.redo)
-        self.undo_button.setObjectName('toolButton');self.redo_button.setObjectName('toolButton')
+        self.undo_button.setObjectName('compactAction');self.redo_button.setObjectName('compactAction')
         tool_layout.addWidget(self.undo_button)
         tool_layout.addWidget(self.redo_button)
-        layout.addWidget(tools)
+        layout.addWidget(self.compact_tools);self.compact_tools.hide()
 
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, 1)
         self.stack.addWidget(self.empty_workspace())
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setHandleWidth(1)
-        self.splitter.addWidget(self.page_sidebar())
+        self.sidebar=self.page_sidebar();self.splitter.addWidget(self.sidebar)
         self.splitter.addWidget(self.viewer())
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([250, 1050])
+        self.sidebar.hide()
         self.stack.addWidget(self.splitter)
         status = QStatusBar()
         self.setStatusBar(status)
@@ -658,6 +652,14 @@ class MainWindow(QMainWindow):
         version = QLabel(f"VELLORA  {__version__}")
         version.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         status.addPermanentWidget(version)
+
+    def toggle_compact_tools(self):
+        visible=self.compact_tools.isHidden();self.compact_tools.setVisible(visible)
+        self.tools_toggle.setText('إخفاء الأدوات' if visible else 'الأدوات')
+
+    def toggle_sidebar(self):
+        visible=self.sidebar.isHidden();self.sidebar.setVisible(visible)
+        self.sidebar_toggle.setText('إخفاء الصفحات' if visible else 'الصفحات')
 
     def button(self, title, handler, primary=False):
         button = QPushButton(title)
@@ -747,7 +749,8 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         bar = QFrame(objectName="viewerBar")
         bar_layout = QHBoxLayout(bar)
-        bar_layout.setContentsMargins(15, 9, 15, 9)
+        bar_layout.setContentsMargins(8, 4, 8, 4);bar_layout.setSpacing(4)
+        self.sidebar_toggle=self.button('الصفحات',self.toggle_sidebar);self.sidebar_toggle.setObjectName('compactAction');self.sidebar_toggle.setToolTip('إظهار الصور المصغرة وتنظيم الصفحات');bar_layout.addWidget(self.sidebar_toggle)
         self.document_name = QLabel("المستند", objectName="section")
         self.document_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         bar_layout.addWidget(self.document_name, 1)
@@ -766,9 +769,9 @@ class MainWindow(QMainWindow):
         self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bar_layout.addWidget(self.zoom_label)
         bar_layout.addWidget(self.button("+", lambda: self.change_zoom(1.25)))
-        bar_layout.addWidget(self.button("ملاءمة العرض", self.fit_page))
-        bar_layout.addWidget(self.button('بحث',self.open_search))
-        bar_layout.addWidget(self.button('مراجعة',self.open_review))
+        fit_button=self.button("ملاءمة", self.fit_page);fit_button.setObjectName('compactAction');bar_layout.addWidget(fit_button)
+        search_button=self.button('بحث',self.open_search);search_button.setObjectName('compactAction');bar_layout.addWidget(search_button)
+        review_button=self.button('مراجعة',self.open_review);review_button.setObjectName('compactAction');bar_layout.addWidget(review_button)
         layout.addWidget(bar)
         self.viewer_stack=QStackedWidget();self.preview = PreviewArea()
         self.preview.setWidgetResizable(True)
@@ -777,7 +780,7 @@ class MainWindow(QMainWindow):
         self.preview.page_requested.connect(self.scroll_to_adjacent_page)
         self.preview_surface = QWidget(objectName="previewSurface")
         preview_layout = QVBoxLayout(self.preview_surface)
-        preview_layout.setContentsMargins(30, 26, 30, 26)
+        preview_layout.setContentsMargins(12, 10, 12, 10)
         preview_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self.image_label = PageImage(objectName="pageImage")
         self.image_label.region_selected.connect(self.select_page_text)

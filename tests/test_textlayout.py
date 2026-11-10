@@ -46,8 +46,10 @@ class TextLayoutTests(unittest.TestCase):
 
     def test_editor_word_mode_and_style_selection(self):
         dialog = PageEditorDialog(text_fixture())
+        self.assertTrue(dialog.format_bar.isHidden())
         dialog.group_mode.setCurrentIndex(dialog.group_mode.findData('word'))
         dialog.objects.item(0).setSelected(True)
+        self.assertFalse(dialog.format_bar.isHidden())
         self.assertEqual(dialog.text.toPlainText(), 'OLD')
         self.assertEqual(dialog.color.currentData(), '#000000')
         dialog.text.setPlainText('NEW'); dialog.set_rect(QRectF(40,50,50,40)); dialog.apply_change()

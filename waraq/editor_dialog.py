@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout,
     QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QInputDialog,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QVBoxLayout, QWidget,
-    QTableWidget, QTableWidgetItem)
+    QTableWidget, QTableWidgetItem, QMenu)
 
 from .editing import edit_page, inspect_page, prepare_page, insert_table, infer_table, replace_table
 from .rendering import render_image, ensure_font_support
@@ -222,20 +222,17 @@ class PageEditorDialog(QDialog):
         self.draft = None
         self.pending = False
         layout = QVBoxLayout(self)
-        note = QLabel('حرّر النص والصور مباشرة داخل الصفحة؛ انقر العنصر أو اسحب حوله ثم استخدم لوحة الخصائص.')
-        note.setWordWrap(True); layout.addWidget(note)
         toolbar = QHBoxLayout()
-        for label, callback in [('تحديد عنصر', self.select_mode), ('نص جديد', self.new_text), ('إضافة صورة…', self.choose_image),
-                                ('استبدال الصورة…', self.replace_selected_image), ('إدراج جدول…', self.new_table),('تحرير جدول محدد…',self.edit_existing_table),
-                                ('قص صورة', self.crop_image), ('تدوير صورة', self.rotate_image),
-                                ('نسخ عنصر', self.copy_selected_element), ('لصق عنصر', self.paste_element),
-                                ('تكرار', self.duplicate_selected)]:
-            button = QPushButton(label); button.clicked.connect(callback); toolbar.addWidget(button)
-        self.ocr_button=QPushButton('OCR لهذه الصفحة');self.ocr_button.clicked.connect(self.ocr_requested.emit);toolbar.addWidget(self.ocr_button)
-        self.undo_button = QPushButton('تراجع'); self.undo_button.clicked.connect(self.undo); toolbar.addWidget(self.undo_button)
-        self.redo_button = QPushButton('إعادة'); self.redo_button.clicked.connect(self.redo); toolbar.addWidget(self.redo_button)
-        previous=QPushButton('الصفحة السابقة');previous.clicked.connect(lambda:self.navigate_page(-1));toolbar.addWidget(previous)
-        following=QPushButton('الصفحة التالية');following.clicked.connect(lambda:self.navigate_page(1));toolbar.addWidget(following)
+        def compact(label,callback):
+            button=QPushButton(label);button.setStyleSheet('padding:4px 8px;min-height:18px;');button.clicked.connect(callback);toolbar.addWidget(button);return button
+        compact('تحديد',self.select_mode);compact('نص',self.new_text);compact('صورة',self.choose_image);compact('جدول',self.new_table);compact('تحرير جدول',self.edit_existing_table)
+        image_tools=QPushButton('أدوات الصورة');image_tools.setStyleSheet('padding:4px 8px;min-height:18px;');image_menu=QMenu(image_tools)
+        image_menu.addAction('استبدال الصورة',self.replace_selected_image);image_menu.addAction('قص الصورة',self.crop_image);image_menu.addAction('تدوير 90°',self.rotate_image);image_tools.setMenu(image_menu);toolbar.addWidget(image_tools)
+        clipboard=QPushButton('العناصر');clipboard.setStyleSheet('padding:4px 8px;min-height:18px;');clipboard_menu=QMenu(clipboard)
+        clipboard_menu.addAction('نسخ العنصر',self.copy_selected_element);clipboard_menu.addAction('لصق العنصر',self.paste_element);clipboard_menu.addAction('تكرار العنصر',self.duplicate_selected);clipboard.setMenu(clipboard_menu);toolbar.addWidget(clipboard)
+        self.ocr_button=compact('OCR',self.ocr_requested.emit)
+        self.undo_button=compact('تراجع',self.undo);self.redo_button=compact('إعادة',self.redo);toolbar.addStretch()
+        previous=compact('‹ السابقة',lambda:self.navigate_page(-1));following=compact('التالية ›',lambda:self.navigate_page(1))
         layout.addLayout(toolbar)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.canvas = EditCanvas(); self.canvas.region_selected.connect(self.pick_region)
@@ -296,13 +293,13 @@ class PageEditorDialog(QDialog):
         # Keep the detailed model controls available internally, but expose the
         # common formatting commands as a compact floating-style bar above the
         # page. Text itself is edited in place on the PDF canvas.
-        quick = QHBoxLayout()
+        self.format_bar=QWidget();quick = QHBoxLayout(self.format_bar);quick.setContentsMargins(2,2,2,2);quick.setSpacing(4)
         quick.addWidget(QLabel('الخط')); quick.addWidget(self.font, 2)
         quick.addWidget(QLabel('الحجم')); quick.addWidget(self.size)
         quick.addWidget(self.bold); quick.addWidget(self.color)
         quick.addWidget(self.alignment); quick.addWidget(self.auto_fit);quick.addWidget(QLabel('شفافية الصورة'));quick.addWidget(self.opacity)
         quick.addStretch(); quick.addWidget(preview);quick.addWidget(self.before_after_button);quick.addWidget(self.delete_button); quick.addWidget(self.apply_button)
-        layout.addLayout(quick)
+        layout.addWidget(self.format_bar);self.format_bar.hide()
         # Retain non-visual selection/geometry controls as state holders without
         # showing the former side panel.
         panel.setParent(self); panel.hide()
@@ -352,6 +349,7 @@ class PageEditorDialog(QDialog):
         self.delete_button.setEnabled(False)
         self.undo_button.setEnabled(bool(self.history)); self.redo_button.setEnabled(bool(self.future))
         self.pending = False
+        self.format_bar.hide()
 
     def selected_entries(self):
         return [self.entries[self.objects.row(item)] for item in self.objects.selectedItems()]
@@ -460,6 +458,8 @@ class PageEditorDialog(QDialog):
             # a complete newly shaped line. The exact box remains user-editable.
             bounds.setTop(max(0, bounds.top()-size*.25))
             bounds.setHeight(max(bounds.height(), size*1.9))
+            self.format_bar.show()
+        else:self.format_bar.hide()
         bounds = bounds.intersected(QRectF(0, 0, self.width, self.height))
         self.set_rect(bounds)
         self.status.setText(f'تم تحديد {len(selected)} عنصر. الاستبدال أو الحذف يخص العناصر المحددة فقط.')
@@ -557,6 +557,7 @@ class PageEditorDialog(QDialog):
 
     def select_mode(self):
         self.clear_draft(); self.mode = 'select'; self.image = None
+        self.format_bar.hide()
         self.status.setText('انقر عنصرًا، أو اسحب مستطيلًا حول النص لتحديد عدة عناصر.')
 
     def pick_region(self, rect):
@@ -594,6 +595,7 @@ class PageEditorDialog(QDialog):
         self.clear_draft(); self.objects.clearSelection(); self.mode = 'text'; self.image = None
         self.text.clear(); self.size.setValue(16)
         self.set_rect(QRectF(self.width*.1, self.height*.1, self.width*.7, self.height*.12))
+        self.format_bar.show()
         self.status.setText('نص جديد: ارسم مكانه على الصفحة، واكتب النص ثم عاين التعديل.')
         self.open_direct_editor()
 
@@ -606,6 +608,7 @@ class PageEditorDialog(QDialog):
         if image.isNull():
             QMessageBox.warning(self, 'الصورة', 'تعذر قراءة الصورة.'); return
         self.clear_draft(); self.objects.clearSelection(); self.mode = 'image'; self.image = image;self.image_opacity=1;self.opacity.setValue(1)
+        self.format_bar.hide()
         self.set_rect(QRectF(self.width*.1, self.height*.1, self.width*.4, self.height*.3))
         self.status.setText(f'الصورة: {Path(path).name}. ارسم مكانها ثم عاين التعديل؛ ستُحفظ نسبة أبعادها.')
 
@@ -655,6 +658,7 @@ class PageEditorDialog(QDialog):
         if dialog.exec()!=QDialog.DialogCode.Accepted:return
         rows=dialog.values()
         self.clear_draft();self.objects.clearSelection();self.mode='table';self.image=None;self.table_rows=rows;self.table_indexes=[]
+        self.format_bar.hide()
         self.table_header=dialog.header.isChecked();self.table_rtl=dialog.rtl.isChecked()
         self.set_rect(QRectF(self.width*.1,self.height*.15,self.width*.8,min(self.height*.6,max(80,len(rows)*35))))
         self.status.setText('اسحب لتحديد مساحة الجدول ثم عاينه. النص والخطوط ستبقى عناصر متجهة داخل PDF.')
@@ -667,6 +671,7 @@ class PageEditorDialog(QDialog):
         rows,indexes,bounds=inferred;dialog=TableEditorDialog(rows,self)
         if dialog.exec()!=QDialog.DialogCode.Accepted:return
         self.clear_draft();self.mode='edit_table';self.image=None;self.table_rows=dialog.values();self.table_indexes=indexes
+        self.format_bar.hide()
         self.table_header=dialog.header.isChecked();self.table_rtl=dialog.rtl.isChecked();self.set_rect(QRectF(*bounds))
         self.status.setText(f'تم التعرف على جدول من {len(rows)} صفوف. عدّل حجمه ثم اضغط «تطبيق على الصفحة».')
 
