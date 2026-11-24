@@ -35,6 +35,6 @@ window.brand_icon().pixmap(256,256).toImage().save(str(root/'tmp'/'icon.png'))
 from PIL import Image
 assets=root/'assets';assets.mkdir(exist_ok=True)
 with Image.open(root/'tmp'/'icon.png') as icon:
-    icon.save(assets/'vellora.ico',sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+    icon.save(assets/'vellora-v4-green.ico',sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
 window.document.mark_saved();window.close()
 print('Captured application and exported page in',out)

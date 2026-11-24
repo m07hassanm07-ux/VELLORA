@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a reproducible VELLORA problem without confidential documents.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never attach confidential PDFs, passwords, certificates, or personal information.
+  - type: input
+    id: version
+    attributes:
+      label: VELLORA version
+      placeholder: 2.23.0
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use a non-confidential sample document if one is required.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true

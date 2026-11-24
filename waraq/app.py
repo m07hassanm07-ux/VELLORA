@@ -11,8 +11,8 @@ import os
 import json
 
 from PySide6.QtCore import Qt, QSize, QTimer, Signal, QItemSelectionModel, QRect, QSettings, QEvent, QPointF
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPixmap, QPen
-from PySide6.QtPrintSupport import QPrinter, QPrintDialog, QPrintPreviewDialog, QAbstractPrintDialog
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPixmap, QPen, QPageLayout
+from PySide6.QtPrintSupport import QPrinter, QPrintDialog, QAbstractPrintDialog
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
@@ -23,12 +23,12 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QKeySequenceEdit,
 )
 import pypdfium2 as pdfium
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 
 from . import __version__
 from .core import Document, Overlay, PasswordRequired, atomic_write, parse_pages
 from .rendering import render_image, text_overlay, ensure_font_support
-from .printing import assemble_print_batch, paint_pdf, requested_pages, PrintCancelled
+from .printing import assemble_print_batch, paint_pdf, preview_sheet, PrintCancelled
 from .merge_dialog import MergeDialog
 from .conversion import (acquire_wia_image, convert_file, image_bytes_to_pdf,
                          web_to_pdf, export_pdf_office, SUPPORTED_TYPES, ConversionCancelled)
@@ -39,6 +39,8 @@ from .professional import (add_attachment, attachment_bytes, list_attachments, r
                            add_form_field, export_page_images, extract_text, fill_form_fields,
                            inspect_signatures, list_form_fields, secure_redact_page, secure_redact_text)
 from .preflight import preflight_pdf, sanitize_pdf, repair_accessibility_basics
+from .accessibility_dialog import open_accessibility_review
+from .form_detection import suggest_text_fields
 from .reading import PageImage, SearchDock, OcrDialog, ReviewDock
 from .textlayout import Glyph, character_map, find_matches, normal_text, select_region
 from .ocr import find_tesseract, run_ocr, JobCancelled
@@ -48,18 +50,20 @@ from .tasks import TaskThread,run_task,process_job
 from .render_service import ProcessRenderer
 from .compare import compare_pdfs
 from .signatures import sign_pkcs12,validate_signatures
+from .signing_dialog import SigningRequestsDialog, sign_incoming_request
 from .shortcuts import validate_shortcut_map
+from .batch_workflows import load_workflows, save_workflows, execute_workflow
 
 
 STYLE = """
 * { font-family: 'Segoe UI'; font-size: 10pt; }
 QMainWindow, QDialog { background: #f3f4f6; color: #1f2937; }
-QMenuBar { background: #202832; color: #f7f8fa; padding: 2px 10px; spacing: 5px; }
-QMenuBar::item { padding: 7px 10px; border-radius: 5px; }
+QMenuBar { background: #202832; color: #f7f8fa; padding: 0 8px; spacing: 3px; font-size: 9pt; }
+QMenuBar::item { padding: 4px 8px; border-radius: 4px; }
 QMenuBar::item:selected { background: #374151; }
 QMenu { background: #ffffff; color: #1f2937; border: 1px solid #d1d5db; padding: 6px; }
 QMenu::item { padding: 7px 26px; border-radius: 4px; }
-QMenu::item:selected { background: #feecee; color: #9f2530; }
+QMenu::item:selected { background: #e7f6f1; color: #076b57; }
 QMenu::separator { height: 1px; background: #e5e7eb; margin: 5px 8px; }
 QFrame#header { background: #27313d; border: none; }
 QLabel#brand { font-size: 22pt; font-weight: 750; color: #ffffff; }
@@ -71,36 +75,49 @@ QFrame#tools { background: #ffffff; border-bottom: 1px solid #d8dde4; }
 QFrame#toolGroup { background: transparent; border-left: 1px solid #e5e7eb; }
 QLabel#toolGroupTitle { color: #7a8491; font-size: 8pt; font-weight: 600; }
 QPushButton { background: #ffffff; color: #344153; border: 1px solid #d7dce3; border-radius: 6px; padding: 7px 12px; min-height: 19px; }
-QPushButton:hover { background: #f8e9eb; border-color: #d8656c; color: #9d2831; }
-QPushButton:pressed { background: #f4d7da; }
+QPushButton:hover { background: #e8f6f1; border-color: #48a98e; color: #076b57; }
+QPushButton:pressed { background: #d5eee6; }
 QPushButton:disabled { color: #aeb5bf; background: #f6f7f9; border-color: #e7e9ed; }
-QPushButton#primary { background: #c9343e; border-color: #c9343e; color: white; font-weight: 700; }
-QPushButton#primary:hover { background: #ac2832; border-color: #ac2832; color: white; }
-QPushButton#primary:disabled { background: #dca5aa; border-color: #dca5aa; color: white; }
+QPushButton#primary { background: #087a63; border-color: #087a63; color: white; font-weight: 700; }
+QPushButton#primary:hover { background: #066650; border-color: #066650; color: white; }
+QPushButton#primary:disabled { background: #8abdaf; border-color: #8abdaf; color: white; }
 QPushButton#headerAction { background: #344151; color: #f7f8fa; border-color: #526174; }
 QPushButton#headerAction:hover { background: #46576a; color: white; border-color: #718198; }
+QPushButton#headerIcon { background: #344151; border: 1px solid #526174; border-radius: 5px; padding: 3px; min-height: 26px; min-width: 26px; }
+QPushButton#headerIcon:hover { background: #46576a; border-color: #718198; }
+QPushButton#primaryIcon { background: #087a63; border: 1px solid #087a63; border-radius: 6px; padding: 3px; min-height: 26px; min-width: 26px; }
+QPushButton#primaryIcon:hover { background: #066650; border-color: #066650; }
+QPushButton#primaryIcon:checked { background: #2f80ed; border-color: #2f80ed; }
 QPushButton#toolButton { border: none; background: transparent; min-width: 72px; padding: 8px 10px; }
-QPushButton#toolButton:hover { background: #f8e9eb; color: #a52c35; }
+QPushButton#toolButton:hover { background: #e8f6f1; color: #076b57; }
 QPushButton#danger { color: #b33e46; }
 QPushButton#ghost { background: transparent; border: none; color: #416370; }
 QFrame#sidebar { background: #ffffff; border-left: 1px solid #d8dde4; }
 QListWidget { background: #f8fafc; border: none; outline: none; padding: 8px; }
 QListWidget::item { border: 1px solid #dfe3e8; border-radius: 7px; margin: 5px 2px; padding: 9px; color: #374151; background: white; }
-QListWidget::item:selected { background: #fff0f1; border: 2px solid #cc3b45; color: #8f232c; }
-QListWidget::item:hover { border-color: #d1787e; }
+QListWidget::item:selected { background: #e9f7f2; border: 2px solid #087a63; color: #075f4e; }
+QListWidget::item:hover { border-color: #6cb7a3; }
 QScrollArea { border: none; background: #e3e5e8; }
 QWidget#previewSurface { background: #e3e5e8; }
 QLabel#pageImage { background: white; border: 1px solid #bfc5cd; }
 QFrame#viewerBar { background: #ffffff; border-bottom: 1px solid #d8dde4; }
+QFrame#viewerBar QPushButton { padding: 1px; min-height: 0; }
+QFrame#viewerBar QSpinBox, QFrame#viewerBar QComboBox { padding: 1px 4px; min-height: 0; }
+QPushButton#lightIcon { background: #f7f8fa; border-color: #d7dce3; }
+QPushButton#lightIcon:hover { background: #e8f6f1; border-color: #48a98e; }
 QFrame#compactTools { background: #ffffff; border-bottom: 1px solid #d8dde4; }
 QPushButton#compactAction { border: none; background: transparent; padding: 5px 9px; min-height: 18px; }
-QPushButton#compactAction:hover { background: #f8e9eb; color: #a52c35; }
+QPushButton#compactAction:hover { background: #e8f6f1; color: #076b57; }
+QFrame#floatingDock { background: #182433; border: 1px solid #3d5063; border-radius: 18px; }
+QFrame#floatingDock QPushButton { background: transparent; border: none; border-radius: 8px; padding: 4px; min-width: 28px; min-height: 26px; }
+QFrame#floatingDock QPushButton:hover { background: #2b4152; }
+QFrame#floatingDock QPushButton:checked { background: #087a63; }
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background: white; color: #1f2937; border: 1px solid #cfd5dd; border-radius: 5px; padding: 6px; min-height: 20px; }
 QStatusBar { background: #ffffff; border-top: 1px solid #d8dde4; color: #647184; }
 QFrame#emptyCard { background: #ffffff; border: 1px solid #d9dee5; border-radius: 14px; }
 QLabel#emptyTitle { font-size: 27pt; font-weight: 750; color: #202b38; }
 QLabel#emptyText { font-size: 11pt; color: #687586; }
-QLabel#emptyMark { font-size: 46pt; font-weight: 750; background: #c9343e; color: white; border-radius: 18px; }
+QLabel#emptyMark { font-size: 46pt; font-weight: 750; background: #087a63; color: white; border-radius: 18px; }
 QLabel#startTitle { font-size: 11pt; font-weight: 700; color: #263445; }
 QLabel#startHint { font-size: 9pt; color: #7b8795; }
 QSplitter::handle { background: #d8dde4; width: 1px; }
@@ -114,13 +131,13 @@ QLabel#brand { color: #ffffff; } QLabel#tagline, QLabel#subtle { color: #aec0ca;
 QLabel#badge { background: #24463e; color: #9ae2cf; }
 QPushButton { background: #263944; color: #e8f0f4; border-color: #49616e; }
 QPushButton:hover { background: #31505a; } QPushButton:disabled { color: #70828b; background: #202e36; }
-QPushButton#primary { background: #c9343e; border-color: #c9343e; color: white; }
+QPushButton#primary { background: #087a63; border-color: #087a63; color: white; }
 QPushButton#headerAction { background: #344553; color: white; }
 QFrame#emptyCard { background: #1d2c35; border-color: #3b505e; }
 QLabel#emptyTitle, QLabel#startTitle { color: #eef4f7; }
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QListWidget { background: #21323c; color: #edf4f7; border-color: #48606c; }
 QListWidget::item { background: #263944; color: #dce8ed; border-color: #415963; }
-QListWidget::item:selected { background: #5a2d33; color: white; border-color: #df6b74; }
+QListWidget::item:selected { background: #154d43; color: white; border-color: #42b99a; }
 QWidget#previewSurface, QScrollArea { background: #10191f; }
 QLabel#pageImage { background: white; }
 """
@@ -154,6 +171,10 @@ class PageDelegate(QStyledItemDelegate):
 
 class PageList(QListWidget):
     externalFiles = Signal(list)
+    rotateRequested = Signal(int)
+    duplicateRequested = Signal()
+    deleteRequested = Signal()
+    moveRequested = Signal(int)
 
     def __init__(self):
         super().__init__()
@@ -184,6 +205,17 @@ class PageList(QListWidget):
             event.acceptProposedAction()
         else:
             super().dropEvent(event)
+
+    def contextMenuEvent(self,event):
+        item=self.itemAt(event.pos())
+        if item is not None and not item.isSelected():self.clearSelection();item.setSelected(True);self.setCurrentItem(item)
+        if not self.selectedItems():return
+        menu=QMenu(self);menu.addAction('تدوير يمين 90°',lambda:self.rotateRequested.emit(90))
+        menu.addAction('تدوير يسار 90°',lambda:self.rotateRequested.emit(-90));menu.addSeparator()
+        menu.addAction('تكرار الصفحة',self.duplicateRequested.emit)
+        menu.addAction('نقل للأعلى',lambda:self.moveRequested.emit(-1));menu.addAction('نقل للأسفل',lambda:self.moveRequested.emit(1))
+        menu.addSeparator();remove=menu.addAction('حذف الصفحة',self.deleteRequested.emit);remove.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        menu.exec(event.globalPos())
 
 
 class PreviewArea(QScrollArea):
@@ -313,17 +345,71 @@ class SaveDialog(QDialog):
         return {'password':self.password.text(),'owner_password':self.owner.text() or self.password.text(),'permissions':permissions}
 
 
-class PrintOptionsDialog(QDialog):
-    def __init__(self,parent=None):
-        super().__init__(parent);self.setWindowTitle('خيارات الطباعة المتقدمة');self.setMinimumWidth(390)
-        layout=QVBoxLayout(self);note=QLabel('إعدادات الورق والاتجاه والوجهين والنسخ تُضبط من نافذة طابعة Windows.');note.setWordWrap(True);layout.addWidget(note)
-        form=QFormLayout();self.nup=QComboBox()
-        for title,value in [('صفحة واحدة في الورقة',1),('صفحتان في الورقة',2),('أربع صفحات في الورقة',4)]:self.nup.addItem(title,value)
-        self.grayscale=QCheckBox('طباعة بتدرج رمادي')
-        form.addRow('تخطيط الورقة',self.nup);form.addRow(self.grayscale);layout.addLayout(form)
+class ProfessionalPrintDialog(QDialog):
+    """Unified VELLORA print settings with an immediate first-sheet preview."""
+    def __init__(self,data,count,current=0,selected=None,parent=None):
+        super().__init__(parent);self.data=data;self.count=count;self.current=current;self.selected=selected or []
+        self.setWindowTitle('الطباعة الاحترافية — VELLORA');self.resize(1040,760)
+        root=QHBoxLayout(self);settings=QWidget();settings.setMaximumWidth(390);form=QFormLayout(settings)
+        self.range=QComboBox();self.range.addItem('كل الصفحات','all');self.range.addItem('الصفحة الحالية','current')
+        self.range.addItem('الصفحات المحددة','selected');self.range.addItem('نطاق مخصص','custom');form.addRow('الصفحات',self.range)
+        self.pages=QLineEdit();self.pages.setPlaceholderText('مثال: 1-3, 6, 9-12');form.addRow('النطاق',self.pages)
+        self.mode=QComboBox();self.mode.addItem('طباعة عادية','normal');self.mode.addItem('كتيّب','booklet');self.mode.addItem('ملصق على عدة أوراق','poster');form.addRow('التخطيط',self.mode)
+        self.sizing=QComboBox()
+        for title,value in [('ملاءمة مساحة الطباعة','fit'),('الحجم الفعلي','actual'),('تصغير الصفحات الكبيرة فقط','shrink'),('نسبة مخصصة','custom')]:self.sizing.addItem(title,value)
+        form.addRow('التحجيم',self.sizing)
+        self.scale=QSpinBox();self.scale.setRange(10,500);self.scale.setValue(100);self.scale.setSuffix(' %');form.addRow('النسبة',self.scale)
+        self.nup=QComboBox()
+        for value in (1,2,4,6,9,16):self.nup.addItem(f'{value} صفحة في الورقة',value)
+        form.addRow('صفحات في الورقة',self.nup)
+        self.duplex=QComboBox();self.duplex.addItem('تلقائي حسب الطابعة','auto');self.duplex.addItem('وجه واحد','none');self.duplex.addItem('وجهان — الحافة الطويلة','long');self.duplex.addItem('وجهان — الحافة القصيرة','short');form.addRow('الطباعة على الوجهين',self.duplex)
+        self.grayscale=QCheckBox('تدرج رمادي');self.annotations=QCheckBox('طباعة التعليقات');self.annotations.setChecked(True)
+        self.border=QCheckBox('إظهار حد حول كل صفحة');form.addRow(self.grayscale);form.addRow(self.annotations);form.addRow(self.border)
+        note=QLabel('تظهر هنا معاينة أول ورقة. اختيار الطابعة وحجم الورق يتم في الخطوة التالية من Windows.');note.setWordWrap(True);form.addRow(note)
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('متابعة الطباعة');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
-        buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText('اختيار الطابعة والطباعة');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
+        buttons.accepted.connect(self.validate);buttons.rejected.connect(self.reject);form.addRow(buttons);root.addWidget(settings)
+        self.preview=QLabel();self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter);self.preview.setStyleSheet('background:#cfd5db;border:1px solid #aeb6bf;')
+        root.addWidget(self.preview,1)
+        self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.timeout.connect(self.update_preview)
+        for widget in (self.range,self.mode,self.sizing,self.nup):widget.currentIndexChanged.connect(self.changed)
+        for widget in (self.grayscale,self.annotations,self.border):widget.toggled.connect(self.changed)
+        self.scale.valueChanged.connect(self.changed);self.pages.textChanged.connect(self.changed);self.changed()
+
+    def indexes(self):
+        kind=self.range.currentData()
+        if kind=='current':return [max(0,min(self.count-1,self.current))]
+        if kind=='selected':return sorted(set(index for index in self.selected if 0<=index<self.count)) or [self.current]
+        if kind=='custom':return parse_pages(self.pages.text(),self.count)
+        return list(range(self.count))
+
+    def settings(self):
+        return {'pages_per_sheet':self.nup.currentData(),'grayscale':self.grayscale.isChecked(),
+            'sizing':self.sizing.currentData(),'scale_percent':self.scale.value(),'mode':self.mode.currentData(),
+            'poster_scale':self.scale.value(),'draw_annotations':self.annotations.isChecked(),'page_border':self.border.isChecked()}
+
+    def changed(self,*_):
+        custom=self.sizing.currentData()=='custom' or self.mode.currentData()=='poster';self.scale.setEnabled(custom)
+        self.pages.setEnabled(self.range.currentData()=='custom');self.nup.setEnabled(self.mode.currentData()=='normal')
+        if self.mode.currentData()=='booklet' and self.duplex.currentData()=='auto':
+            self.duplex.setCurrentIndex(max(0,self.duplex.findData('short')))
+        self.timer.start(120)
+
+    def update_preview(self):
+        try:
+            image=preview_sheet(self.data,self.indexes(),**{key:value for key,value in self.settings().items()
+                if key in ('pages_per_sheet','grayscale','mode','poster_scale','draw_annotations','page_border')})
+            target=QSize(max(100,self.preview.width()-18),max(100,self.preview.height()-18))
+            self.preview.setPixmap(QPixmap.fromImage(image).scaled(target,Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.SmoothTransformation))
+        except Exception as exc:self.preview.setText(str(exc))
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event);self.timer.start(80)
+
+    def validate(self):
+        try:self.indexes()
+        except Exception as exc:QMessageBox.warning(self,'نطاق الصفحات',str(exc));return
+        self.accept()
 
 
 class CreateDocumentDialog(QDialog):
@@ -582,10 +668,38 @@ class MainWindow(QMainWindow):
 
     def brand_icon(self):
         root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-        icon = QIcon(str(root / 'vellora-icon.png'))
+        icon = QIcon(str(root / 'vellora-icon-v4-green.png'))
         if not icon.isNull():
             return icon
-        return QIcon(str(Path(__file__).resolve().parents[1] / 'assets' / 'vellora-icon.png'))
+        return QIcon(str(Path(__file__).resolve().parents[1] / 'assets' / 'vellora-icon-v4-green.png'))
+
+    def brand_mark(self):
+        root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
+        icon = QIcon(str(root / 'vellora-icon-v4-green.png'))
+        if not icon.isNull():
+            return icon
+        return QIcon(str(Path(__file__).resolve().parents[1] / 'assets' / 'vellora-icon-v4-green.png'))
+
+    def action_icon(self,name):
+        root=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parents[1]))
+        packaged=root/'icons'/f'{name}.svg';development=Path(__file__).resolve().parents[1]/'assets'/'icons'/f'{name}.svg'
+        return QIcon(str(packaged if packaged.is_file() else development))
+
+    def dock_icon(self,name):
+        """Render the standard vector icon in white for the dark command dock."""
+        source=self.action_icon(name).pixmap(22,22)
+        tinted=QPixmap(source.size());tinted.fill(Qt.GlobalColor.transparent)
+        painter=QPainter(tinted);painter.drawPixmap(0,0,source)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(tinted.rect(),QColor('#f4f8fa'));painter.end()
+        return QIcon(tinted)
+
+    def icon_button(self,icon,name,handler,primary=False,light=False):
+        button=QPushButton();button.setIcon(self.action_icon(icon));button.setIconSize(QSize(20,20));button.setFixedSize(34,32)
+        button.setObjectName('lightIcon' if light else 'primaryIcon' if primary else 'headerIcon')
+        if light:button.setFixedSize(27,26);button.setIconSize(QSize(17,17))
+        button.setToolTip(name);button.setAccessibleName(name)
+        button.clicked.connect(handler);button.setCursor(Qt.CursorShape.PointingHandCursor);return button
 
     def make_ui(self):
         container = QWidget()
@@ -594,37 +708,37 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         header = QFrame(objectName="header")
+        header.setMaximumHeight(40)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(14, 5, 14, 5);header_layout.setSpacing(6)
-        brand_mark=QLabel();brand_mark.setPixmap(self.brand_icon().pixmap(30,30));brand_mark.setFixedSize(34,34)
+        header_layout.setContentsMargins(10, 3, 10, 3);header_layout.setSpacing(4)
+        brand_mark=QLabel();brand_mark.setPixmap(self.brand_icon().pixmap(24,24));brand_mark.setFixedSize(28,28)
         brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter);header_layout.addWidget(brand_mark)
         brand = QLabel("VELLORA", objectName="brand")
-        brand.setStyleSheet('font-size:16pt;');header_layout.addWidget(brand)
+        brand.setStyleSheet('font-size:14pt;');header_layout.addWidget(brand)
         header_layout.addStretch()
-        self.tools_toggle=self.button('الأدوات',self.toggle_compact_tools);self.tools_toggle.setObjectName('headerAction');self.tools_toggle.setToolTip('إظهار أو إخفاء أدوات التنظيم والتحرير');header_layout.addWidget(self.tools_toggle)
-        open_button = self.button("فتح PDF", self.open_dialog, primary=True)
-        open_button.setToolTip("فتح مستند جديد · Ctrl+O")
+        self.tools_toggle=self.icon_button('tools','إظهار أدوات التنظيم والتحرير',self.toggle_compact_tools);header_layout.addWidget(self.tools_toggle)
+        open_button = self.icon_button('open','فتح PDF · Ctrl+O',self.open_dialog,primary=True)
         header_layout.addWidget(open_button)
-        create_button=self.button("إنشاء PDF", self.create_pdf_dialog);create_button.setObjectName('headerAction');header_layout.addWidget(create_button)
-        self.edit_button = self.button("تعديل PDF", self.edit_page_content)
-        self.edit_button.setObjectName('headerAction')
-        self.edit_button.setToolTip("تعديل نص الصفحة وإضافة النصوص والصور · Ctrl+Shift+E")
+        create_button=self.icon_button('new','إنشاء PDF جديد',self.create_pdf_dialog);header_layout.addWidget(create_button)
+        self.edit_button = self.icon_button('edit','تعديل نصوص وصور PDF · Ctrl+Shift+E',self.edit_page_content)
+        self.edit_button.setCheckable(True)
         header_layout.addWidget(self.edit_button)
-        self.print_button = self.button("طباعة", self.print_document)
-        self.print_button.setObjectName('headerAction')
-        self.print_button.setToolTip("الطباعة عبر طابعات Windows · Ctrl+P")
+        self.print_button = self.icon_button('print','طباعة · Ctrl+P',self.print_document)
         header_layout.addWidget(self.print_button)
-        self.save_button = self.button("حفظ نسخة", self.save_document, primary=True)
+        self.save_button = self.icon_button('save','حفظ نسخة · Ctrl+S',self.save_document,primary=True)
         header_layout.addWidget(self.save_button)
         layout.addWidget(header)
 
         self.compact_tools = QFrame(objectName="compactTools")
+        self.compact_tools.setMaximumHeight(36)
         tool_layout = QHBoxLayout(self.compact_tools)
         tool_layout.setContentsMargins(10, 3, 10, 3);tool_layout.setSpacing(1)
-        items=[("add","دمج",self.merge_dialog),("extract","استخراج",self.extract_pages),("split","تقسيم",self.split_document),
-               ("text","إضافة نص",self.add_text),("number","ترقيم",self.add_numbers),("templates","قوالب",self.insert_template),("web","استيراد ويب",self.import_web)]
-        for key,title,handler in items:
-            self.buttons[key]=self.button(title,handler);self.buttons[key].setObjectName('compactAction');tool_layout.addWidget(self.buttons[key])
+        items=[("add","open","دمج ملفات",self.merge_dialog),("extract","pages","استخراج صفحات",self.extract_pages),
+               ("split","scissors","تقسيم المستند",self.split_document),("text","text","إضافة نص",self.add_text),
+               ("number","edit","ترقيم الصفحات",self.add_numbers),("templates","new","إدراج قالب",self.insert_template),
+               ("web","tools","استيراد صفحة ويب",self.import_web)]
+        for key,icon,title,handler in items:
+            self.buttons[key]=self.icon_button(icon,title,handler,light=True);tool_layout.addWidget(self.buttons[key])
         tool_layout.addStretch()
         self.undo_button = self.button("تراجع", self.undo)
         self.redo_button = self.button("إعادة", self.redo)
@@ -655,11 +769,11 @@ class MainWindow(QMainWindow):
 
     def toggle_compact_tools(self):
         visible=self.compact_tools.isHidden();self.compact_tools.setVisible(visible)
-        self.tools_toggle.setText('إخفاء الأدوات' if visible else 'الأدوات')
+        self.tools_toggle.setToolTip('إخفاء الأدوات' if visible else 'إظهار أدوات التنظيم والتحرير')
 
     def toggle_sidebar(self):
         visible=self.sidebar.isHidden();self.sidebar.setVisible(visible)
-        self.sidebar_toggle.setText('إخفاء الصفحات' if visible else 'الصفحات')
+        self.sidebar_toggle.setToolTip('إخفاء الصور المصغرة' if visible else 'إظهار الصور المصغرة وتنظيم الصفحات')
 
     def button(self, title, handler, primary=False):
         button = QPushButton(title)
@@ -676,7 +790,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(28,28,28,28)
         card=QFrame(objectName='emptyCard');card.setMaximumWidth(820);card_layout=QVBoxLayout(card);card_layout.setContentsMargins(52,34,52,38);card_layout.setSpacing(14)
         mark = QLabel(objectName="emptyMark")
-        mark.setPixmap(self.brand_icon().pixmap(92,92))
+        mark.setPixmap(self.brand_mark().pixmap(92,92))
         mark.setFixedSize(98, 98)
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(mark, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -721,6 +835,8 @@ class MainWindow(QMainWindow):
         self.pages.itemSelectionChanged.connect(self.update_status)
         self.pages.model().rowsMoved.connect(self.pages_moved)
         self.pages.externalFiles.connect(lambda paths: self.import_paths(paths, append=bool(self.document.pages)))
+        self.pages.rotateRequested.connect(self.rotate);self.pages.duplicateRequested.connect(self.duplicate)
+        self.pages.deleteRequested.connect(self.delete_pages);self.pages.moveRequested.connect(self.move_pages)
         layout.addWidget(self.pages, 1)
         controls = QWidget()
         controls_layout = QVBoxLayout(controls)
@@ -749,29 +865,34 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         bar = QFrame(objectName="viewerBar")
         bar_layout = QHBoxLayout(bar)
-        bar_layout.setContentsMargins(8, 4, 8, 4);bar_layout.setSpacing(4)
-        self.sidebar_toggle=self.button('الصفحات',self.toggle_sidebar);self.sidebar_toggle.setObjectName('compactAction');self.sidebar_toggle.setToolTip('إظهار الصور المصغرة وتنظيم الصفحات');bar_layout.addWidget(self.sidebar_toggle)
+        bar_layout.setContentsMargins(8, 2, 8, 2);bar_layout.setSpacing(4)
+        self.sidebar_toggle=self.icon_button('pages','إظهار الصور المصغرة وتنظيم الصفحات',self.toggle_sidebar,light=True)
+        bar_layout.addWidget(self.sidebar_toggle)
         self.document_name = QLabel("المستند", objectName="section")
         self.document_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         bar_layout.addWidget(self.document_name, 1)
         self.page_number = QSpinBox()
         self.page_number.setMinimum(1)
-        self.page_number.setFixedWidth(85)
+        self.page_number.setFixedWidth(66)
+        self.page_number.setFixedHeight(26)
         self.page_number.valueChanged.connect(self.go_to_page)
         self.page_number.setToolTip("الانتقال إلى صفحة")
         bar_layout.addWidget(QLabel("صفحة"))
         bar_layout.addWidget(self.page_number)
         self.view_mode_combo=QComboBox();self.view_mode_combo.addItem('صفحة واحدة','single');self.view_mode_combo.addItem('تمرير متصل','continuous');self.view_mode_combo.addItem('صفحتان متقابلتان','facing')
         self.view_mode_combo.setToolTip('طريقة عرض صفحات المستند');self.view_mode_combo.currentIndexChanged.connect(self.change_view_mode);bar_layout.addWidget(self.view_mode_combo)
-        bar_layout.addWidget(self.button("−", lambda: self.change_zoom(0.8)))
+        self.view_mode_combo.setFixedHeight(26)
+        zoom_out=self.button("−", lambda: self.change_zoom(0.8));zoom_out.setFixedSize(26,26)
+        zoom_out.setAccessibleName('تصغير');bar_layout.addWidget(zoom_out)
         self.zoom_label = QLabel("ملاءمة")
         self.zoom_label.setMinimumWidth(55)
         self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bar_layout.addWidget(self.zoom_label)
-        bar_layout.addWidget(self.button("+", lambda: self.change_zoom(1.25)))
-        fit_button=self.button("ملاءمة", self.fit_page);fit_button.setObjectName('compactAction');bar_layout.addWidget(fit_button)
-        search_button=self.button('بحث',self.open_search);search_button.setObjectName('compactAction');bar_layout.addWidget(search_button)
-        review_button=self.button('مراجعة',self.open_review);review_button.setObjectName('compactAction');bar_layout.addWidget(review_button)
+        zoom_in=self.button("+", lambda: self.change_zoom(1.25));zoom_in.setFixedSize(26,26)
+        zoom_in.setAccessibleName('تكبير');bar_layout.addWidget(zoom_in)
+        bar_layout.addWidget(self.icon_button('fit','ملاءمة الصفحة كاملة · Ctrl+0',self.fit_page,light=True))
+        bar_layout.addWidget(self.icon_button('search','بحث داخل المستند',self.open_search,light=True))
+        bar_layout.addWidget(self.icon_button('review','مراجعة',self.open_review,light=True))
         layout.addWidget(bar)
         self.viewer_stack=QStackedWidget();self.preview = PreviewArea()
         self.preview.setWidgetResizable(True)
@@ -794,7 +915,32 @@ class MainWindow(QMainWindow):
         self.continuous_surface=QWidget(objectName='previewSurface');self.continuous_layout=QGridLayout(self.continuous_surface);self.continuous_layout.setContentsMargins(30,26,30,26);self.continuous_layout.setHorizontalSpacing(22);self.continuous_layout.setVerticalSpacing(22)
         self.continuous_preview.setWidget(self.continuous_surface);self.continuous_preview.verticalScrollBar().valueChanged.connect(self.schedule_continuous_render);self.continuous_preview.resized.connect(self.rebuild_continuous_view)
         self.viewer_stack.addWidget(self.continuous_preview);layout.addWidget(self.viewer_stack,1)
+        self.floating_dock=QFrame(self.viewer_stack,objectName='floatingDock')
+        quick=QHBoxLayout(self.floating_dock);quick.setContentsMargins(8,3,8,3);quick.setSpacing(3)
+        dock_items=[('edit','تحديد وتعديل مباشر',self.edit_page_content,True),('text','إضافة نص',self.add_text,False),
+                    ('image','إضافة صورة داخل المحرر',self.edit_page_content,False),('table','تحرير الجداول',self.edit_page_content,False),
+                    ('review','إضافة تعليق أو مراجعة',self.open_review,False),('save','حفظ نسخة',self.save_document,False),
+                    ('print','طباعة',self.print_document,False)]
+        for icon,title,handler,checkable in dock_items:
+            button=self.icon_button(icon,title,handler);button.setObjectName('dockIcon');button.setFixedSize(34,30)
+            button.setIcon(self.dock_icon(icon))
+            button.setCheckable(checkable);quick.addWidget(button)
+            if checkable:self.edit_dock_button=button
+        self.floating_dock.adjustSize();self.floating_dock.raise_();self.viewer_stack.installEventFilter(self)
+        QTimer.singleShot(0,self.position_floating_dock)
         return widget
+
+    def position_floating_dock(self):
+        if not hasattr(self,'floating_dock') or not hasattr(self,'viewer_stack'):return
+        self.floating_dock.adjustSize();size=self.floating_dock.sizeHint()
+        x=max(8,(self.viewer_stack.width()-size.width())//2)
+        y=max(8,self.viewer_stack.height()-size.height()-18)
+        self.floating_dock.setGeometry(x,y,size.width(),size.height());self.floating_dock.raise_()
+
+    def eventFilter(self,source,event):
+        if hasattr(self,'viewer_stack') and source is self.viewer_stack and event.type() in (QEvent.Type.Resize,QEvent.Type.Show):
+            QTimer.singleShot(0,self.position_floating_dock)
+        return super().eventFilter(source,event)
 
     def make_menu(self):
         menu = self.menuBar()
@@ -833,11 +979,13 @@ class MainWindow(QMainWindow):
             (edits, "rotate", "تدوير الصفحات المحددة", "Ctrl+R", lambda: self.rotate(90)),
             (edits, "delete", "حذف الصفحات المحددة", "Delete", self.delete_pages),
             (edits, "cleartext", "إزالة النصوص المضافة من المحدد", "", self.clear_text),
-            (view, "fit", "ملاءمة العرض", "Ctrl+0", self.fit_page),
+            (view, "fit", "ملاءمة الصفحة كاملة", "Ctrl+0", self.fit_page),
             (view, "zoom", "الحجم الطبيعي", "Ctrl+1", self.actual_size),
             (view, "operations", "مركز العمليات…", "Ctrl+Alt+J", self.show_operation_center),
             (tools, 'ocr', 'التعرف على النص OCR…', '', self.ocr_document),
+            (tools, 'batchworkflows', 'إجراءات دفعية محفوظة…', 'Ctrl+Alt+B', self.batch_workflows_dialog),
             (tools, 'forms', 'تعبئة حقول النموذج…', 'Ctrl+Alt+F', self.fill_pdf_form),
+            (tools, 'detectforms', 'اقتراح حقول تعبئة للصفحة…', '', self.detect_form_fields),
             (tools, 'createform', 'إنشاء حقل نموذج…', '', self.begin_create_form_field),
             (tools, 'signatures', 'فحص التوقيعات…', '', self.check_signatures),
             (tools, 'visualsignature', 'إضافة توقيع مرئي…', '', self.begin_visual_signature),
@@ -852,9 +1000,12 @@ class MainWindow(QMainWindow):
             (tools, 'clearbookmark', 'حذف الإشارة المرجعية للصفحة', '', self.clear_bookmark),
             (tools, 'scanner', 'مسح صفحة من الماسح الضوئي…', '', self.scan_page),
             (tools, 'preflight', 'فحص المستند قبل النشر…', '', self.preflight_document),
+            (tools, 'accessibility', 'مراجعة إمكانية الوصول…', '', lambda: open_accessibility_review(self)),
             (tools, 'sanitize', 'تنظيف البيانات الخفية…', '', self.sanitize_document),
             (tools, 'redactsearch', 'تنقيح نص في جميع الصفحات…', '', self.redact_text_everywhere),
             (tools, 'digitalsign', 'توقيع رقمي بشهادة PFX…', '', self.sign_with_certificate),
+            (tools, 'signrequests', 'طلبات التوقيع…', '', lambda: SigningRequestsDialog(self).exec()),
+            (tools, 'signincoming', 'توقيع ملف طلب وارد…', '', lambda: sign_incoming_request(self)),
             (tools, 'verifydigital', 'التحقق من توقيعات ملف…', '', self.verify_signature_file),
             (tools, 'exportsettings', 'تصدير إعدادات VELLORA…', '', self.export_settings),
             (tools, 'importsettings', 'استيراد إعدادات VELLORA…', '', self.import_settings),
@@ -1303,7 +1454,7 @@ class MainWindow(QMainWindow):
                 action.setEnabled(self.document.can_undo)
             elif key == "redo":
                 action.setEnabled(self.document.can_redo)
-            elif key not in ("open", "openproject", "add", "blank", "inserttemplate", "about", "close", "merge", "create", "web", "dark"):
+            elif key not in ("open", "openproject", "add", "blank", "inserttemplate", "about", "close", "merge", "create", "web", "dark", "signrequests", "signincoming", "accessibility"):
                 action.setEnabled(bool(count))
 
     def pdf_for(self, source_id):
@@ -1419,7 +1570,8 @@ class MainWindow(QMainWindow):
             width,height=self.display_size(page)
             scale = self.zoom * 96 / 72
             if self.fit_mode:
-                scale = max(0.1, (self.preview.viewport().width() - 72) / max(width, 1))
+                viewport=self.preview.viewport()
+                scale = max(0.05, min((viewport.width()-26)/max(width,1), (viewport.height()-22)/max(height,1)))
                 self.zoom = scale * 72 / 96
             # Cap render allocation while retaining document quality in saved files.
             scale = min(scale, 2600 / max(width, height, 1))
@@ -1515,7 +1667,9 @@ class MainWindow(QMainWindow):
             if spec is None:return
             try:
                 data=self.assembled_bytes('إنشاء حقل النموذج')
-                result=add_form_field(data,self.pages.currentRow(),spec['kind'],spec['name'],(x,y,w,h),value=spec['value'],options=spec['options'])
+                result=add_form_field(data,self.pages.currentRow(),spec['kind'],spec['name'],(x,y,w,h),
+                                      value=spec['value'],options=spec['options'],
+                                      calculation=spec['calculation'],required=spec['required'])
                 self.document.replace_document(result,'نموذج PDF.pdf');self.refresh(self.pages.currentRow())
                 self.statusBar().showMessage(f'تم إنشاء الحقل «{spec["name"]}». اختر «حفظ نسخة» لحفظ النموذج.',12000)
             except JobCancelled:pass
@@ -1573,14 +1727,14 @@ class MainWindow(QMainWindow):
 
     def begin_create_form_field(self):
         if not self.document.pages:return
-        labels=['حقل نص','مربع اختيار','قائمة اختيار','زر إعادة ضبط','حقل مجموع حسابي']
+        labels=['حقل نص','مربع اختيار','قائمة اختيار','زر إعادة ضبط','حقل حسابي']
         kinds=['text','checkbox','choice','button','calculation']
         label,ok=QInputDialog.getItem(self,'إنشاء حقل نموذج','نوع الحقل:',labels,0,False)
         if not ok:return
         kind=kinds[labels.index(label)]
         name,ok=QInputDialog.getText(self,'إنشاء حقل نموذج','اسم داخلي فريد للحقل:')
         if not ok or not name.strip():return
-        value='';options=[]
+        value='';options=[];calculation='SUM';required=False
         if kind=='text':
             value,ok=QInputDialog.getText(self,'القيمة الافتراضية','القيمة الافتراضية (اختيارية):')
             if not ok:return
@@ -1597,12 +1751,21 @@ class MainWindow(QMainWindow):
         else:
             data=self.assembled_bytes('قراءة حقول النموذج')
             available=[field.name for field in list_form_fields(data) if field.kind=='/Tx']
-            raw,ok=QInputDialog.getMultiLineText(self,'حقول المجموع',
+            operations={'المجموع':'SUM','المتوسط':'AVG','حاصل الضرب':'PRD','أصغر قيمة':'MIN','أكبر قيمة':'MAX'}
+            selected,ok=QInputDialog.getItem(self,'العملية الحسابية','اختر العملية:',list(operations),0,False)
+            if not ok:return
+            calculation=operations[selected]
+            raw,ok=QInputDialog.getMultiLineText(self,'حقول الحساب',
                 'اكتب الاسم الداخلي لكل حقل رقمي في سطر مستقل:\nالمتاح: '+('، '.join(available) or 'لا توجد حقول نصية'))
             if not ok:return
             options=[line.strip() for line in raw.splitlines() if line.strip()]
             if not options:self.error('أضف حقلًا رقميًا واحدًا على الأقل للحساب.');return
-        self._pending_form_field={'kind':kind,'name':name.strip(),'value':value,'options':options}
+        if kind in ('text','choice'):
+            selected,ok=QInputDialog.getItem(self,'تعبئة الحقل','هل تعبئة هذا الحقل إلزامية؟',['اختياري','مطلوب'],0,False)
+            if not ok:return
+            required=selected=='مطلوب'
+        self._pending_form_field={'kind':kind,'name':name.strip(),'value':value,'options':options,
+                                  'calculation':calculation,'required':required}
         self.image_label.tool='form';self.image_label.setCursor(Qt.CursorShape.CrossCursor)
         self.statusBar().showMessage('اسحب على الصفحة لتحديد مكان وحجم الحقل الجديد. Esc للإلغاء.',15000)
 
@@ -1807,20 +1970,23 @@ class MainWindow(QMainWindow):
         if not self.document.pages:
             return
         if self._page_editor is not None:
-            self.stack.setCurrentWidget(self._page_editor)
+            self.viewer_stack.setCurrentWidget(self._page_editor)
             return
         index = max(0, self.pages.currentRow())
         try:
             data=self.document_job('تجهيز الصفحة للتحرير','assemble',{'indexes':[index],'preview_context':(index+1,len(self.document.pages))})['data']
             editor = PageEditorDialog(data, self, embedded=True)
             self._page_editor=editor;self._editing_page=index
-            self.stack.addWidget(editor);self.stack.setCurrentWidget(editor)
+            # Keep editing inside the document viewer instead of replacing the
+            # whole workspace. The page strip, document bar and main commands
+            # therefore remain visible while the user edits on the paper.
+            self.viewer_stack.addWidget(editor);self.viewer_stack.setCurrentWidget(editor)
             editor.accepted.connect(self.finish_inline_edit)
             editor.rejected.connect(self.cancel_inline_edit)
             editor.ocr_requested.connect(lambda:self.ocr_page_from_editor(index))
             editor.navigate_requested.connect(self.navigate_inline_edit)
-            self.edit_button.setText('جارٍ التحرير')
-            self.statusBar().showMessage('وضع التحرير المباشر: اختر النص أو الصورة من الصفحة، ثم عدّل الخصائص من اللوحة اليمنى.')
+            self.edit_button.setChecked(True);self.edit_dock_button.setChecked(True);self.edit_button.setToolTip('إنهاء وضع التحرير المباشر')
+            self.statusBar().showMessage('التحرير المباشر نشط: انقر النص أو الصورة على الورقة، واستخدم الأدوات التي ظهرت فوقها.')
         except JobCancelled:pass
         except Exception as exc:
             self.error(exc)
@@ -1829,8 +1995,8 @@ class MainWindow(QMainWindow):
         editor=self._page_editor
         if editor is None:return
         index=self._editing_page;changed=editor.data!=editor.initial_data
-        self.stack.setCurrentWidget(self.splitter);self.stack.removeWidget(editor)
-        editor.deleteLater();self._page_editor=None;self._editing_page=-1;self.edit_button.setText('تعديل PDF')
+        self.viewer_stack.setCurrentIndex(0 if self.view_mode=='single' else 1);self.viewer_stack.removeWidget(editor)
+        editor.deleteLater();self._page_editor=None;self._editing_page=-1;self.edit_button.setChecked(False);self.edit_dock_button.setChecked(False);self.edit_button.setToolTip('تعديل نصوص وصور PDF · Ctrl+Shift+E')
         if changed:self.document.replace_page(index,editor.data)
         self.refresh(index)
         self.statusBar().showMessage('طُبّقت تعديلات الصفحة. اختر «حفظ نسخة» لحفظ المستند المعدّل.',12000)
@@ -1842,8 +2008,8 @@ class MainWindow(QMainWindow):
         if target<0 or target>=len(self.document.pages):
             self.statusBar().showMessage('لا توجد صفحة أخرى في هذا الاتجاه.',5000);return
         if editor.data!=editor.initial_data:self.document.replace_page(current,editor.data)
-        self.stack.setCurrentWidget(self.splitter);self.stack.removeWidget(editor);editor.deleteLater()
-        self._page_editor=None;self._editing_page=-1;self.edit_button.setText('تعديل PDF')
+        self.viewer_stack.setCurrentIndex(0 if self.view_mode=='single' else 1);self.viewer_stack.removeWidget(editor);editor.deleteLater()
+        self._page_editor=None;self._editing_page=-1;self.edit_button.setChecked(False);self.edit_dock_button.setChecked(False);self.edit_button.setToolTip('تعديل نصوص وصور PDF · Ctrl+Shift+E')
         self.refresh(target);self.pages.setCurrentRow(target)
         QTimer.singleShot(0,self.edit_page_content)
 
@@ -1855,8 +2021,8 @@ class MainWindow(QMainWindow):
     def cancel_inline_edit(self):
         editor=self._page_editor
         if editor is None:return
-        index=self._editing_page;self.stack.setCurrentWidget(self.splitter);self.stack.removeWidget(editor)
-        editor.deleteLater();self._page_editor=None;self._editing_page=-1;self.edit_button.setText('تعديل PDF')
+        index=self._editing_page;self.viewer_stack.setCurrentIndex(0 if self.view_mode=='single' else 1);self.viewer_stack.removeWidget(editor)
+        editor.deleteLater();self._page_editor=None;self._editing_page=-1;self.edit_button.setChecked(False);self.edit_dock_button.setChecked(False);self.edit_button.setToolTip('تعديل نصوص وصور PDF · Ctrl+Shift+E')
         self.refresh(max(0,index));self.statusBar().showMessage('أُلغيت تعديلات الصفحة.',8000)
 
     def add_numbers(self):
@@ -1892,6 +2058,64 @@ class MainWindow(QMainWindow):
     def assembled_bytes(self, title='تجهيز المستند'):
         """Build the current workspace through the cancellable worker."""
         return self.document_job(title, 'assemble', {})['data']
+
+    def detect_form_fields(self):
+        if not self.document.pages:
+            return
+        index=max(0,self.pages.currentRow())
+        try:
+            data=self.assembled_bytes('تجهيز الصفحة لاكتشاف حقول التعبئة')
+            reader=PdfReader(BytesIO(data))
+            widgets=[ref.get_object()['/Rect'] for ref in reader.pages[index].get('/Annots', [])
+                     if ref.get_object().get('/Subtype')=='/Widget' and '/Rect' in ref.get_object()]
+            proposals=suggest_text_fields(data,index,widgets)
+            if not proposals:
+                QMessageBox.information(self,'اقتراح حقول التعبئة','لم تُكتشف فراغات نصية مناسبة في هذه الصفحة.')
+                return
+            dialog=QDialog(self)
+            dialog.setWindowTitle('حقول التعبئة المقترحة')
+            dialog.resize(530,340)
+            layout=QVBoxLayout(dialog)
+            layout.addWidget(QLabel(f'الصفحة {index+1}. اختر الفراغات التي تريد تحويلها إلى حقول نصية.'))
+            items=QListWidget()
+            layout.addWidget(items)
+            for number,(label,rect) in enumerate(proposals,1):
+                item=QListWidgetItem(f'{number}. {label or "فراغ نصي"}  ·  من أعلى الصفحة: {rect[1]:.0f} نقطة')
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked)
+                items.addItem(item)
+            buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setText('إنشاء الحقول المحددة')
+            buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            if dialog.exec()!=QDialog.DialogCode.Accepted:
+                return
+            selected=[proposal for i,proposal in enumerate(proposals)
+                      if items.item(i).checkState()==Qt.CheckState.Checked]
+            if not selected:
+                return
+            def create(report,cancel):
+                result=data
+                used=set(reader.get_fields() or {})
+                for number,(_,rect) in enumerate(selected,1):
+                    report(number-1,len(selected),'إنشاء حقول التعبئة…')
+                    base=f'Page{index+1}_Blank{number}'
+                    name=base
+                    suffix=2
+                    while name in used:
+                        name=f'{base}_{suffix}'
+                        suffix+=1
+                    result=add_form_field(result,index,'text',name,rect)
+                    used.add(name)
+                return result
+            result=run_task(self,'إنشاء حقول التعبئة',create)
+            self.document.replace_document(result,'نموذج PDF.pdf')
+            self.refresh(index)
+            self.statusBar().showMessage(f'أُضيف {len(selected)} حقل تعبئة. احفظ نسخة للاحتفاظ بالنتيجة.',12000)
+        except JobCancelled:
+            pass
+        except Exception as exc:
+            self.error(exc,exc)
 
     def fill_pdf_form(self):
         if not self.document.pages:return
@@ -2190,20 +2414,34 @@ class MainWindow(QMainWindow):
         if not self.confirm_print_preflight():return
         try:
             data=self.document_job('تجهيز معاينة الطباعة','assemble',{})['data']
-            printer=QPrinter(QPrinter.PrinterMode.HighResolution);printer.setResolution(300)
-            printer.setDocName(self.document_name.text());printer.setFromTo(1,len(self.document.pages))
-            dialog=QPrintPreviewDialog(printer,self);dialog.setWindowTitle('معاينة وطباعة — VELLORA');dialog.resize(1100,800)
-            def paint(target):
-                try:
-                    indexes=requested_pages(target,len(self.document.pages),self.pages.currentRow(),self.selected())
-                    paint_pdf(target,data,indexes)
-                except Exception as exc:self.error(exc)
-            dialog.paintRequested.connect(paint)
-            self.statusBar().showMessage('راجع شكل الورق والصفحات، ثم اضغط أيقونة الطابعة داخل المعاينة للإرسال.',15000)
-            dialog.exec()
+            self.run_professional_print(data,len(self.document.pages),self.pages.currentRow(),self.selected(),self.document_name.text())
         except JobCancelled:pass
         except Exception as exc:
             self.error(exc)
+
+    def run_professional_print(self,data,count,current=0,selected=None,doc_name='VELLORA'):
+        options=ProfessionalPrintDialog(data,count,current,selected,self)
+        if options.exec()!=QDialog.DialogCode.Accepted:return False
+        indexes=options.indexes();settings=options.settings()
+        printer=QPrinter(QPrinter.PrinterMode.HighResolution);printer.setResolution(300);printer.setDocName(doc_name)
+        duplex={'auto':QPrinter.DuplexMode.DuplexAuto,'none':QPrinter.DuplexMode.DuplexNone,
+                'long':QPrinter.DuplexMode.DuplexLongSide,'short':QPrinter.DuplexMode.DuplexShortSide}
+        printer.setDuplex(duplex[options.duplex.currentData()])
+        if settings['mode']=='booklet':printer.setPageOrientation(QPageLayout.Orientation.Landscape)
+        choose=QPrintDialog(printer,self);choose.setWindowTitle('اختيار الطابعة — VELLORA')
+        choose.setOption(QAbstractPrintDialog.PrintDialogOption.PrintPageRange,False)
+        if choose.exec()!=QDialog.DialogCode.Accepted:return False
+        progress=QProgressDialog('جاري إرسال الصفحات إلى الطابعة…','إلغاء',0,max(1,len(indexes)),self)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal);progress.setMinimumDuration(0)
+        def tick(done,total):
+            progress.setMaximum(max(1,total));progress.setValue(done);QApplication.processEvents();return not progress.wasCanceled()
+        try:
+            printed=paint_pdf(printer,data,indexes,tick,**settings)
+            self.statusBar().showMessage(f'تم إرسال {printed} صفحة إلى الطابعة.',15000);return True
+        except PrintCancelled:
+            self.statusBar().showMessage('تم إلغاء الطباعة؛ قد تكون بعض الصفحات أُرسلت بالفعل.',15000);return False
+        except Exception as exc:self.error(exc,exc);return False
+        finally:progress.close()
 
     def confirm_print_preflight(self):
         try:report=preflight_pdf(self.assembled_bytes('فحص سريع قبل الطباعة'))
@@ -2218,6 +2456,57 @@ class MainWindow(QMainWindow):
         box.addButton('إلغاء ومراجعة المستند',QMessageBox.ButtonRole.RejectRole)
         box.exec();return box.clickedButton()==proceed
 
+    def batch_workflows_dialog(self):
+        """Create, run or delete a reusable local batch workflow."""
+        try:workflows=load_workflows()
+        except Exception as exc:self.error(exc);return
+        choices=['تشغيل إجراء محفوظ','إنشاء إجراء جديد']
+        if workflows:choices.append('حذف إجراء محفوظ')
+        action,ok=QInputDialog.getItem(self,'الإجراءات الدفعية','اختر العملية:',choices,0,False)
+        if not ok:return
+        if action=='إنشاء إجراء جديد':
+            name,ok=QInputDialog.getText(self,'إجراء جديد','اسم الإجراء:')
+            if not ok or not name.strip():return
+            rotation_label,ok=QInputDialog.getItem(self,'إجراء جديد','تدوير كل الصفحات:',
+                ['بدون تدوير','90°','180°','270°'],0,False)
+            if not ok:return
+            watermark,ok=QInputDialog.getText(self,'إجراء جديد','نص العلامة المائية (اتركه فارغًا بدون علامة):')
+            if not ok:return
+            numbering_label,ok=QInputDialog.getItem(self,'إجراء جديد','إضافة ترقيم للصفحات؟',['نعم','لا'],0,False)
+            if not ok:return
+            merge_label,ok=QInputDialog.getItem(self,'إجراء جديد','دمج الملفات في ناتج واحد؟',['نعم','لا'],0,False)
+            if not ok:return
+            workflow={'name':name.strip(),'rotation':{'بدون تدوير':0,'90°':90,'180°':180,'270°':270}[rotation_label],
+                      'watermark':watermark.strip(),'numbering':numbering_label=='نعم','merge':merge_label=='نعم'}
+            try:
+                workflows=[item for item in workflows if item['name'].casefold()!=workflow['name'].casefold()]
+                workflows.append(workflow);save_workflows(workflows)
+                self.statusBar().showMessage(f'تم حفظ الإجراء الدفعي: {workflow["name"]}',10000)
+            except Exception as exc:self.error(exc)
+            return
+        if not workflows:
+            QMessageBox.information(self,'الإجراءات الدفعية','أنشئ إجراءً محفوظًا أولًا.');return
+        names=[item['name'] for item in workflows];name,ok=QInputDialog.getItem(self,'الإجراءات الدفعية','اختر الإجراء:',names,0,False)
+        if not ok:return
+        workflow=next(item for item in workflows if item['name']==name)
+        if action=='حذف إجراء محفوظ':
+            try:save_workflows([item for item in workflows if item['name']!=name]);self.statusBar().showMessage(f'تم حذف الإجراء: {name}',8000)
+            except Exception as exc:self.error(exc)
+            return
+        paths,_=QFileDialog.getOpenFileNames(self,'ملفات PDF للإجراء الدفعي','','PDF (*.pdf)')
+        if not paths:return
+        output=QFileDialog.getExistingDirectory(self,'مجلد حفظ النتائج')
+        if not output:return
+        try:
+            results=run_task(self,f'تشغيل الإجراء: {name}',
+                lambda report,cancelled:execute_workflow(paths,output,workflow,report,cancelled))
+            self.statusBar().showMessage(f'اكتمل الإجراء «{name}»: تم إنشاء {len(results)} ملف.',15000)
+            QMessageBox.information(self,'اكتمل الإجراء الدفعي',f'تم إنشاء {len(results)} ملف داخل:\n{output}')
+        except RuntimeError as exc:
+            if 'أُلغيت' in str(exc):self.statusBar().showMessage('أُلغيت العملية الدفعية.',8000)
+            else:self.error(exc)
+        except Exception as exc:self.error(exc)
+
     def print_batch(self):
         paths,_=QFileDialog.getOpenFileNames(self,"اختيار ملفات PDF للطباعة الدفعية","","PDF (*.pdf)")
         if not paths:return
@@ -2228,49 +2517,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("تم إلغاء تجهيز الطباعة الدفعية.",10000);return
         except Exception as exc:
             self.error(exc,exc);return
-        printer=QPrinter(QPrinter.PrinterMode.HighResolution);printer.setResolution(300)
-        printer.setDocName(f"VELLORA — طباعة دفعية ({len(paths)} ملفات)");printer.setFromTo(1,count)
-        dialog=QPrintDialog(printer,self);dialog.setMinMax(1,count)
-        dialog.setOption(QAbstractPrintDialog.PrintDialogOption.PrintPageRange,True)
-        if dialog.exec()!=QDialog.DialogCode.Accepted:return
-        options=PrintOptionsDialog(self)
-        if options.exec()!=QDialog.DialogCode.Accepted:return
-        indexes=requested_pages(printer,count)
-        progress=QProgressDialog("جاري إرسال الطباعة الدفعية…","إلغاء",0,len(indexes),self)
-        progress.setWindowModality(Qt.WindowModality.ApplicationModal);progress.setMinimumDuration(0)
-        def tick(done,total):
-            progress.setMaximum(total);progress.setValue(done);QApplication.processEvents()
-            return not progress.wasCanceled()
-        try:
-            printed=paint_pdf(printer,data,indexes,tick,pages_per_sheet=options.nup.currentData(),
-                              grayscale=options.grayscale.isChecked())
-            self.statusBar().showMessage(f"تم إرسال {printed} صفحة من {len(paths)} ملفات إلى الطابعة.",15000)
-        except PrintCancelled:
-            self.statusBar().showMessage("تم إلغاء الطباعة الدفعية؛ قد تكون بعض الصفحات أُرسلت بالفعل.",15000)
-        except Exception as exc:self.error(exc,exc)
-        finally:progress.close()
+        self.run_professional_print(data,count,0,[],f'VELLORA — طباعة دفعية ({len(paths)} ملفات)')
 
     def print_preview(self):
-        if not self.document.pages:
-            return
-        try:
-            data=self.document_job('تجهيز معاينة الطباعة','assemble',{})['data']
-            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-            printer.setResolution(150)
-            printer.setDocName(self.document_name.text())
-            dialog = QPrintPreviewDialog(printer, self)
-            dialog.setWindowTitle("معاينة الطباعة — VELLORA")
-            dialog.resize(1000, 760)
-            def paint(target):
-                try:
-                    paint_pdf(target, data, list(range(len(self.document.pages))))
-                except Exception as exc:
-                    self.error(exc)
-            dialog.paintRequested.connect(paint)
-            dialog.exec()
-        except JobCancelled:pass
-        except Exception as exc:
-            self.error(exc)
+        self.print_document()
 
     def export(self, indexes=None):
         chosen = range(len(self.document.pages)) if indexes is None else indexes
@@ -2393,17 +2643,26 @@ def main():
     app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
     window = MainWindow()
     window.show()
+    qa_screenshot=next((value.split('=',1)[1] for value in sys.argv[1:] if value.startswith('--qa-screenshot=')),None)
+    def capture_qa():
+        if not qa_screenshot:return
+        window.render_current();QApplication.processEvents()
+        target=Path(qa_screenshot);target.parent.mkdir(parents=True,exist_ok=True)
+        window.grab().save(str(target));window.document.mark_saved();window.close();app.quit()
     arguments = [p for p in sys.argv[1:] if not p.startswith('--') and Path(p).suffix.lower() in SUPPORTED_TYPES]
     if arguments:
         def open_arguments():
             window.import_paths(arguments)
             if '--print' in sys.argv and window.document.pages:
                 window.print_document()
+            elif qa_screenshot:QTimer.singleShot(2500,capture_qa)
         QTimer.singleShot(0, open_arguments)
     else:
         project=next((p for p in sys.argv[1:] if Path(p).suffix.lower()=='.waraq'),None)
         if project:QTimer.singleShot(0,lambda:window.open_project(project))
-        else:QTimer.singleShot(500,window.offer_recovery)
+        else:
+            QTimer.singleShot(500,window.offer_recovery)
+            if qa_screenshot:QTimer.singleShot(1200,capture_qa)
     sys.exit(app.exec())
 
 

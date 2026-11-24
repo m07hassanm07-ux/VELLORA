@@ -60,8 +60,11 @@ class TemplateAndInlineTests(unittest.TestCase):
         self.assertTrue(window.sidebar.isHidden());self.assertTrue(window.compact_tools.isHidden())
         window.toggle_compact_tools();self.assertFalse(window.compact_tools.isHidden());window.toggle_compact_tools()
         window.edit_page_content();self.assertIsNotNone(window._page_editor)
-        self.assertIs(window.stack.currentWidget(),window._page_editor)
+        self.assertIs(window.viewer_stack.currentWidget(),window._page_editor)
+        self.assertIs(window.stack.currentWidget(),window.splitter)
+        self.assertTrue(window.edit_button.isChecked())
         window.cancel_inline_edit();self.assertIsNone(window._page_editor)
+        self.assertFalse(window.edit_button.isChecked())
         self.assertIs(window.stack.currentWidget(),window.splitter)
         window.document.mark_saved();window.close()
 

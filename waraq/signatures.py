@@ -18,7 +18,7 @@ class ValidationResult:
 
 
 def sign_pkcs12(data: bytes, certificate: str | Path, password: str,
-                *, reason: str = '', location: str = '') -> bytes:
+                *, reason: str = '', location: str = '', field_name: str | None = None) -> bytes:
     from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
     from pyhanko.sign import signers
     certificate=Path(certificate)
@@ -26,10 +26,10 @@ def sign_pkcs12(data: bytes, certificate: str | Path, password: str,
         raise ValueError('اختر ملف شهادة PKCS#12 صالحًا بصيغة PFX أو P12.')
     signer=signers.SimpleSigner.load_pkcs12(certificate,passphrase=password.encode('utf-8'))
     if signer is None:raise ValueError('تعذر فتح الشهادة. تحقق من كلمة المرور ومحتوى ملف الشهادة.')
-    field='WaraqaSignature_'+uuid.uuid4().hex[:12]
+    field=field_name or 'WaraqaSignature_'+uuid.uuid4().hex[:12]
     metadata=signers.PdfSignatureMetadata(field_name=field,reason=reason[:500] or None,location=location[:500] or None)
     source=BytesIO(data);writer=IncrementalPdfFileWriter(source);output=BytesIO()
-    signers.sign_pdf(writer,metadata,signer=signer,output=output)
+    signers.sign_pdf(writer,metadata,signer=signer,output=output,existing_fields_only=field_name is not None)
     return output.getvalue()
 
 

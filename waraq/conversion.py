@@ -15,10 +15,11 @@ import sys
 import tempfile
 import time
 import re
+import unicodedata
 from urllib.parse import urlparse
 
 from PIL import Image, ImageOps, ImageSequence
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 
 IMAGE_TYPES={'.png','.jpg','.jpeg','.tif','.tiff','.bmp','.webp'}
 OFFICE_TYPES={'.doc','.docx','.rtf','.odt','.xls','.xlsx','.ods','.ppt','.pptx','.odp'}
@@ -78,6 +79,106 @@ def table_rows(text: str) -> list[list[str]]:
         cells=[cell.strip() for cell in re.split(r'\t+| {2,}',line) if cell.strip()]
         rows.append(cells or [line])
     return rows
+
+
+def office_page_layouts(data: bytes) -> list[dict]:
+    """Extract positioned, styled top-level objects for editable Office output."""
+    from .editing import inspect_page
+    from .textlayout import character_map, normal_text, union_rect
+    reader=PdfReader(BytesIO(data));layouts=[]
+    for page_index,page in enumerate(reader.pages):
+        writer=PdfWriter();writer.add_page(page);stream=BytesIO();writer.write(stream);writer.close()
+        width,height,entries=inspect_page(stream.getvalue())
+        converted=[
+            {'kind':entry.kind,'text':entry.text,'rect':entry.rect,'size':entry.size,'family':entry.family,
+             'bold':entry.bold,'color':entry.color,'alignment':entry.alignment}
+            for entry in entries]
+        original_text=[entry for entry in converted if entry['kind']=='text' and entry['text'].strip()]
+        converted=[entry for entry in converted if entry['kind']!='text']
+        _,_,glyphs=character_map(data,page_index);visible=[glyph for glyph in glyphs if glyph.text and not glyph.text.isspace()];lines=[]
+        for glyph in sorted(visible,key=lambda item:(item.rect[1]+item.rect[3]/2,item.rect[0])):
+            center=glyph.rect[1]+glyph.rect[3]/2;matches=[line for line in lines if abs(line['center']-center)<=max(2,glyph.rect[3]*.45)]
+            if matches:line=min(matches,key=lambda item:abs(item['center']-center));line['glyphs'].append(glyph)
+            else:lines.append({'center':center,'glyphs':[glyph]})
+        for line in lines:
+            visual=sorted(line['glyphs'],key=lambda glyph:glyph.rect[0]);heights=sorted(glyph.rect[3] for glyph in visual);threshold=max(10,heights[len(heights)//2]*1.25)
+            runs=[];run=[]
+            for glyph in visual:
+                if run and glyph.rect[0]-(run[-1].rect[0]+run[-1].rect[2])>threshold:runs.append(run);run=[]
+                run.append(glyph)
+            if run:runs.append(run)
+            for run in runs:
+                selected=sorted(run,key=lambda glyph:glyph.index);pieces=[]
+                for position,glyph in enumerate(selected):
+                    if position:
+                        between=glyphs[selected[position-1].index+1:glyph.index]
+                        if any(item.text.isspace() for item in between):pieces.append(' ')
+                    pieces.append(glyph.text)
+                text=normal_text(''.join(pieces));rect=union_rect([glyph.rect for glyph in selected]);size=max(4,sorted(glyph.rect[3] for glyph in selected)[len(selected)//2]*.75)
+                def overlap(entry):
+                    ex,ey,ew,eh=entry['rect'];return max(0,min(rect[0]+rect[2],ex+ew)-max(rect[0],ex))*max(0,min(rect[1]+rect[3],ey+eh)-max(rect[1],ey))
+                sample=max(original_text,key=overlap) if original_text else None
+                rtl=sum(unicodedata.bidirectional(char) in ('AL','R') for char in text)>sum(char.isascii() and char.isalpha() for char in text)
+                converted.append({'kind':'text','text':text,'rect':rect,'size':sample['size'] if sample else size,
+                    'family':sample['family'] if sample else 'Segoe UI','bold':sample['bold'] if sample else False,
+                    'color':sample['color'] if sample else '#172a32','alignment':sample['alignment'] if sample else ('right' if rtl else 'left')})
+        layouts.append({'width':width,'height':height,'entries':converted})
+    return layouts
+
+
+def spatial_table(entries) -> list[list[str]]:
+    """Convert positioned text objects into stable spreadsheet rows/columns."""
+    def value(entry,name):return entry[name] if isinstance(entry,dict) else getattr(entry,name)
+    texts=[entry for entry in entries if value(entry,'kind')=='text' and value(entry,'text').strip()]
+    if not texts:return []
+    lines=[]
+    for entry in sorted(texts,key=lambda item:(value(item,'rect')[1]+value(item,'rect')[3]/2,value(item,'rect')[0])):
+        rect=value(entry,'rect');center=rect[1]+rect[3]/2;tolerance=max(3,float(value(entry,'size'))*.65)
+        matches=[line for line in lines if abs(line['center']-center)<=tolerance]
+        if matches:
+            line=min(matches,key=lambda item:abs(item['center']-center));line['items'].append(entry)
+            line['center']=sum(value(item,'rect')[1]+value(item,'rect')[3]/2 for item in line['items'])/len(line['items'])
+        else:lines.append({'center':center,'items':[entry]})
+    anchors=[]
+    for line in lines:
+        for entry in sorted(line['items'],key=lambda item:value(item,'rect')[0]):
+            x=value(entry,'rect')[0];tolerance=max(12,float(value(entry,'size'))*2)
+            matches=[(index,anchor) for index,anchor in enumerate(anchors) if abs(anchor-x)<=tolerance]
+            if matches:
+                index,_=min(matches,key=lambda pair:abs(pair[1]-x));anchors[index]=(anchors[index]+x)/2
+            else:anchors.append(x)
+    anchors.sort();rows=[]
+    for line in sorted(lines,key=lambda item:item['center']):
+        cells=['']*len(anchors)
+        for entry in sorted(line['items'],key=lambda item:value(item,'rect')[0]):
+            rect=value(entry,'rect');column=min(range(len(anchors)),key=lambda index:abs(anchors[index]-rect[0]))
+            text=value(entry,'text').strip();cells[column]=(cells[column]+' '+text).strip()
+        while cells and not cells[-1]:cells.pop()
+        rows.append(cells or [''])
+    return rows
+
+
+def sample_box_background(image: Image.Image, rect, page_size) -> tuple[tuple[int,int,int],float]:
+    """Estimate a text box background and variation for editable PPT overlays."""
+    x,y,w,h=rect;page_w,page_h=page_size
+    left=max(0,round(x/page_w*image.width));top=max(0,round(y/page_h*image.height))
+    right=min(image.width,max(left+1,round((x+w)/page_w*image.width)));bottom=min(image.height,max(top+1,round((y+h)/page_h*image.height)))
+    pad=max(2,round(min(image.width/page_w,image.height/page_h)*3));outer=(max(0,left-pad),max(0,top-pad),min(image.width,right+pad),min(image.height,bottom+pad))
+    crop=image.convert('RGB').crop(outer);inner=(left-outer[0],top-outer[1],right-outer[0],bottom-outer[1]);step=max(1,max(crop.size)//80)
+    pixels=[crop.getpixel((px,py)) for py in range(0,crop.height,step) for px in range(0,crop.width,step)
+            if px<inner[0] or px>=inner[2] or py<inner[1] or py>=inner[3]]
+    if not pixels:pixels=list(crop.resize((12,12)).get_flattened_data())
+    channels=tuple(sorted(pixel[channel] for pixel in pixels)[len(pixels)//2] for channel in range(3))
+    variation=sum(abs(pixel[channel]-channels[channel]) for pixel in pixels for channel in range(3))/(len(pixels)*3)
+    return channels,variation
+
+
+def office_rgb(color: str | tuple[int,int,int]) -> int:
+    """Return the integer ordering expected by Office COM ForeColor.RGB."""
+    if isinstance(color,str):
+        value=color.lstrip('#');color=tuple(int(value[index:index+2],16) for index in (0,2,4))
+    red,green,blue=color
+    return red|(green<<8)|(blue<<16)
 
 
 def export_pdf_office(data: bytes, destination: str | Path, kind: str,
@@ -272,23 +373,58 @@ def office_export_worker(source: str, destination: str, kind: str, error_path: s
             document.SaveAs2(destination,FileFormat=16);document.Close(False);document=None
         elif kind=='xlsx':
             app=DispatchEx('Excel.Application');app.Visible=False;app.DisplayAlerts=False;app.AutomationSecurity=3
-            document=app.Workbooks.Add();reader=PdfReader(source)
-            for page_index,page in enumerate(reader.pages):
-                sheet=document.Worksheets(1) if page_index==0 else document.Worksheets.Add(After=document.Worksheets(document.Worksheets.Count))
-                sheet.Name=('صفحة '+str(page_index+1))[:31]
-                for row_index,row in enumerate(table_rows(page.extract_text() or ''),1):
-                    for column_index,value in enumerate(row,1):sheet.Cells(row_index,column_index).Value=value
-                sheet.Columns.AutoFit()
+            document=app.Workbooks.Add();pdf_data=Path(source).read_bytes();layouts=office_page_layouts(pdf_data)
+            from .professional import export_page_images
+            with tempfile.TemporaryDirectory(prefix='vellora-xlsx-') as directory:
+                images=export_page_images(pdf_data,directory,dpi=110,prefix='page')
+                for page_index,layout in enumerate(layouts):
+                    sheet=document.Worksheets(1) if page_index==0 else document.Worksheets.Add(After=document.Worksheets(document.Worksheets.Count))
+                    sheet.Name=('صفحة '+str(page_index+1))[:31];rows=spatial_table(layout['entries']);max_columns=max((len(row) for row in rows),default=1)
+                    for row_index,row in enumerate(rows,1):
+                        for column_index,value in enumerate(row,1):
+                            cell=sheet.Cells(row_index,column_index);cell.NumberFormat='@';cell.Value=value
+                    sheet.Cells.WrapText=True;sheet.Cells.VerticalAlignment=-4160;sheet.Columns.AutoFit();sheet.Rows.AutoFit()
+                    for column in range(1,max_columns+1):
+                        if sheet.Columns(column).ColumnWidth>60:sheet.Columns(column).ColumnWidth=60
+                    joined=' '.join(value for row in rows for value in row)
+                    if sum('\u0600'<=char<='\u06ff' for char in joined)>sum(char.isascii() and char.isalpha() for char in joined):
+                        sheet.DisplayRightToLeft=True
+                    if page_index<len(images):
+                        with Image.open(images[page_index]) as picture:
+                            preview_width=360;preview_height=preview_width*picture.height/picture.width
+                        anchor=sheet.Cells(1,max_columns+2)
+                        sheet.Shapes.AddPicture(str(images[page_index]),False,True,float(anchor.Left),float(anchor.Top),preview_width,preview_height)
             document.SaveAs(destination,FileFormat=51);document.Close(False);document=None
         elif kind=='pptx':
             from .professional import export_page_images
+            pdf_data=Path(source).read_bytes();layouts=office_page_layouts(pdf_data)
             app=DispatchEx('PowerPoint.Application');document=app.Presentations.Add(WithWindow=False)
+            if layouts:
+                document.PageSetup.SlideWidth=720;document.PageSetup.SlideHeight=720*layouts[0]['height']/layouts[0]['width']
             with tempfile.TemporaryDirectory(prefix='waraq-ppt-') as directory:
-                images=export_page_images(Path(source).read_bytes(),directory,dpi=144,prefix='slide')
+                images=export_page_images(pdf_data,directory,dpi=144,prefix='slide')
                 slide_width=float(document.PageSetup.SlideWidth);slide_height=float(document.PageSetup.SlideHeight)
-                for image in images:
+                for page_index,image in enumerate(images):
                     slide=document.Slides.Add(document.Slides.Count+1,12)
-                    slide.Shapes.AddPicture(str(image),False,True,0,0,slide_width,slide_height)
+                    with Image.open(image) as opened:
+                        picture=opened.convert('RGB');pixel_width,pixel_height=picture.size
+                        scale=min(slide_width/picture.width,slide_height/picture.height)
+                        width,height=picture.width*scale,picture.height*scale
+                        image_left,image_top=(slide_width-width)/2,(slide_height-height)/2
+                        slide.Shapes.AddPicture(str(image),False,True,image_left,image_top,width,height)
+                        if page_index<len(layouts):
+                            layout=layouts[page_index];page_w,page_h=layout['width'],layout['height']
+                            for entry in [item for item in layout['entries'] if item['kind']=='text' and item['text'].strip()][:250]:
+                                background,variation=sample_box_background(picture,entry['rect'],(page_w,page_h))
+                                if variation>28:continue
+                                x,y,w,h=entry['rect'];left=image_left+x/page_w*width;top=image_top+y/page_h*height
+                                box_width=max(8,w/page_w*width);box_height=max(6,h/page_h*height*1.25)
+                                shape=slide.Shapes.AddTextbox(1,left-.5,top-.5,box_width+1,box_height+1)
+                                shape.Fill.Visible=-1;shape.Fill.Solid();shape.Fill.ForeColor.RGB=office_rgb(background);shape.Line.Visible=0
+                                frame=shape.TextFrame;frame.MarginLeft=0;frame.MarginRight=0;frame.MarginTop=0;frame.MarginBottom=0;frame.WordWrap=-1
+                                text=frame.TextRange;text.Text=entry['text'];text.Font.Name=entry['family'];text.Font.Size=max(4,entry['size']*width/page_w)
+                                text.Font.Bold=-1 if entry['bold'] else 0;text.Font.Color.RGB=office_rgb(entry['color'])
+                                text.ParagraphFormat.Alignment={'left':1,'center':2,'right':3}.get(entry['alignment'],1)
             document.SaveAs(destination,24);document.Close();document=None
         else:raise ConversionError('صيغة تصدير Office غير مدعومة.')
         return 0

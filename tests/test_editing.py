@@ -1,5 +1,6 @@
 from io import BytesIO
 import unittest
+from unittest.mock import patch
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as raw
@@ -8,11 +9,13 @@ from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject, Rec
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QImage, QColor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QPlainTextEdit, QTableWidgetSelectionRange
 
 from waraq.core import Document
-from waraq.editing import prepare_page, inspect_page, edit_page, insert_table, infer_table, replace_table, EditableObject
-from waraq.editor_dialog import PageEditorDialog
+from waraq.editing import (prepare_page, inspect_page, edit_page, following_flow_indexes,
+                           insert_table, infer_table, replace_table, EditableObject,
+                           transform_objects, reorder_objects, rotate_objects)
+from waraq.editor_dialog import PageEditorDialog, TableEditorDialog
 from waraq.rendering import ensure_font_support, render_image
 
 
@@ -35,6 +38,26 @@ class PageEditingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([]); ensure_font_support()
+
+    def test_full_page_text_can_be_rebuilt_and_undone(self):
+        dialog = PageEditorDialog(text_fixture())
+        original = dialog.data
+
+        def apply_text(window):
+            editor = window.findChild(QPlainTextEdit)
+            self.assertIn('OLD TEXT', editor.toPlainText())
+            editor.setPlainText('Replacement text\nنص عربي')
+            window.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok).click()
+            return window.result()
+
+        with patch.object(QDialog, 'exec', apply_text):
+            dialog.edit_full_page_text()
+        result = PdfReader(BytesIO(dialog.data)).pages[0]
+        self.assertIn('Replacement text', ' '.join(result.extract_text().split()))
+        self.assertNotIn('OLD TEXT', result.extract_text())
+        self.assertEqual((result.mediabox.width, result.mediabox.height), (500, 800))
+        dialog.undo()
+        self.assertEqual(dialog.data, original)
 
     def test_replace_actually_removes_selected_text_and_preserves_other_content(self):
         source = prepare_page(text_fixture())
@@ -62,6 +85,48 @@ class PageEditingTests(unittest.TestCase):
         changed = edit_page(changed, [item.index])
         self.assertFalse(any(e.kind == 'image' for e in inspect_page(changed)[2]))
         self.assertIn('KEEP ME', PdfReader(BytesIO(changed)).pages[0].extract_text())
+
+    def test_image_can_be_moved_and_resized_without_rasterising_page(self):
+        image=QImage(80,40,QImage.Format.Format_ARGB32);image.fill(QColor('#d52b45'))
+        data=edit_page(prepare_page(text_fixture()),image=image,rect=(80,180,160,80))
+        picture=next(entry for entry in inspect_page(data)[2] if entry.kind=='image')
+        moved=transform_objects(data,[picture.index],picture.rect,(140,260,200,100))
+        after=next(entry for entry in inspect_page(moved)[2] if entry.kind=='image')
+        self.assertAlmostEqual(after.rect[0],140,delta=1)
+        self.assertAlmostEqual(after.rect[1],260,delta=1)
+        self.assertAlmostEqual(after.rect[2],200,delta=1)
+        self.assertAlmostEqual(after.rect[3],100,delta=1)
+        text=' '.join(PdfReader(BytesIO(moved)).pages[0].extract_text().split())
+        self.assertIn('OLD TEXT',text);self.assertIn('KEEP ME',text)
+
+    def test_contextual_image_properties_appear_on_direct_selection(self):
+        image=QImage(80,40,QImage.Format.Format_ARGB32);image.fill(QColor('#087a63'))
+        data=edit_page(prepare_page(text_fixture()),image=image,rect=(80,180,160,80))
+        dialog=PageEditorDialog(data)
+        picture_index=next(index for index,entry in enumerate(dialog.entries) if entry.kind=='image')
+        dialog.objects.item(picture_index).setSelected(True)
+        self.assertFalse(dialog.image_bar.isHidden());self.assertTrue(dialog.format_bar.isHidden())
+        before=dialog.rect();dialog.align_selection('hcenter')
+        self.assertAlmostEqual(dialog.rect().center().x(),dialog.width/2,delta=1)
+        self.assertAlmostEqual(dialog.rect().height(),before.height(),delta=1)
+        dialog.reject()
+
+    def test_selected_objects_can_move_to_front_and_back(self):
+        data=prepare_page(text_fixture());entries=inspect_page(data)[2]
+        old=next(entry for entry in entries if entry.text=='OLD TEXT')
+        front=reorder_objects(data,[old.index],True)
+        self.assertEqual([entry.text for entry in inspect_page(front)[2] if entry.kind=='text'][-1],'OLD TEXT')
+        moved=next(entry for entry in inspect_page(front)[2] if entry.text=='OLD TEXT')
+        back=reorder_objects(front,[moved.index],False)
+        self.assertEqual([entry.text for entry in inspect_page(back)[2] if entry.kind=='text'][0],'OLD TEXT')
+
+    def test_selected_object_rotates_around_its_center(self):
+        data=prepare_page(text_fixture());old=next(entry for entry in inspect_page(data)[2] if entry.text=='OLD TEXT')
+        rotated=rotate_objects(data,[old.index],old.rect,90)
+        after=next(entry for entry in inspect_page(rotated)[2] if entry.text=='OLD TEXT')
+        self.assertAlmostEqual(after.rect[0]+after.rect[2]/2,old.rect[0]+old.rect[2]/2,delta=1)
+        self.assertAlmostEqual(after.rect[1]+after.rect[3]/2,old.rect[1]+old.rect[3]/2,delta=1)
+        self.assertAlmostEqual(after.rect[2],old.rect[3],delta=2)
 
     def test_arabic_addition_and_plain_text_not_html(self):
         changed = edit_page(prepare_page(text_fixture()), text='نص عربي جديد\n<b>literal</b>', rect=(30, 180, 420, 110), size=20)
@@ -92,12 +157,46 @@ class PageEditingTests(unittest.TestCase):
         extracted=' '.join(PdfReader(BytesIO(changed)).pages[0].extract_text().split())
         self.assertIn('longer replacement paragraph',extracted)
 
+    def test_paragraph_growth_moves_following_content_without_changing_text(self):
+        source=prepare_page(text_fixture());entries=inspect_page(source)[2]
+        old=next(entry for entry in entries if entry.text=='OLD TEXT')
+        following=next(entry for entry in entries if entry.text=='KEEP ME')
+        changed=edit_page(source,[old.index],text='A longer paragraph that now uses two lines',
+            rect=(40,60,230,52),size=16,move_indexes=[following.index],move_down=28)
+        moved=next(entry for entry in inspect_page(changed)[2] if entry.text=='KEEP ME')
+        self.assertAlmostEqual(moved.rect[1],following.rect[1]+28,delta=1)
+        extracted=' '.join(PdfReader(BytesIO(changed)).pages[0].extract_text().split())
+        self.assertIn('longer paragraph',extracted);self.assertIn('KEEP ME',extracted)
+
+    def test_flow_moves_only_same_column_and_rejects_page_overflow(self):
+        entries=[EditableObject(0,'text','selected',(40,60,220,40)),
+                 EditableObject(1,'text','below',(50,120,180,20)),
+                 EditableObject(2,'text','other column',(330,120,120,20))]
+        self.assertEqual(following_flow_indexes(entries,[0],(40,60,220,40),25,800),[1])
+        with self.assertRaisesRegex(ValueError,'مساحة كافية'):
+            following_flow_indexes(entries+[EditableObject(3,'image','',(50,770,100,25))],
+                                   [0],(40,60,220,40),20,800)
+
     def test_vector_table_insertion_preserves_cells(self):
         source=prepare_page(text_fixture())
         changed=insert_table(source,(40,200,420,120),[['Name','Amount'],['Ali','10']],header=True)
         text=' '.join(PdfReader(BytesIO(changed)).pages[0].extract_text().split())
         self.assertIn('Name',text);self.assertIn('Amount',text);self.assertIn('Ali',text)
         self.assertIn('OLD TEXT', PdfReader(BytesIO(source)).pages[0].extract_text())
+
+    def test_merged_table_cells_custom_dimensions_and_editor_controls(self):
+        source=prepare_page(text_fixture())
+        changed=insert_table(source,(40,200,420,150),[['Quarterly report','','Total'],['North','25','25']],
+            spans=[(0,0,1,2)],column_widths=[1,2,1],row_heights=[1,2],border_width=2,
+            border_color='#172a32',header_color='#f8dfe3')
+        text=' '.join(PdfReader(BytesIO(changed)).pages[0].extract_text().split())
+        self.assertIn('Quarterly report',text);self.assertIn('North',text);self.assertIn('Total',text)
+        with self.assertRaisesRegex(ValueError,'متداخلة'):
+            insert_table(source,(40,200,420,150),[['A','B'],['C','D']],spans=[(0,0,2,1),(1,0,1,2)])
+        dialog=TableEditorDialog([['A','B'],['C','D']])
+        selected=QTableWidgetSelectionRange(0,0,0,1);dialog.table.setRangeSelected(selected,True);dialog.merge_cells()
+        self.assertEqual(dialog.spans(),[(0,0,1,2)])
+        dialog.table.setCurrentCell(0,1);dialog.unmerge_cell();self.assertEqual(dialog.spans(),[])
 
     def test_table_inference_and_replacement_use_cell_matrix(self):
         entries=[];index=0

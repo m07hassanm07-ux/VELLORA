@@ -6,6 +6,7 @@ from io import BytesIO
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import NameObject, TextStringObject
+from .accessibility import is_marked
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ def preflight_pdf(data: bytes, password: str = '') -> PreflightReport:
     if encrypted and not reader.decrypt(password):raise ValueError('كلمة مرور المستند غير صحيحة.')
     issues=[];fields=reader.get_fields() or {};signatures=sum(1 for field in fields.values() if str(field.get('/FT',''))=='/Sig')
     attachments=sum(1 for _ in reader.attachment_list)
-    root=reader.trailer['/Root'];mark=root.get('/MarkInfo');tagged=bool(mark and mark.get_object().get('/Marked'))
+    root=reader.trailer['/Root'];tagged=is_marked(root)
     language=str(root.get('/Lang','')).strip()
     metadata_stream=root.get('/Metadata');xmp=b''
     if metadata_stream:

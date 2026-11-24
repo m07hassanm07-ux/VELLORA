@@ -15,14 +15,14 @@ SetCompressor /SOLID lzma
 BrandingText "VELLORA — Professional PDF Studio"
 ShowInstDetails show
 ShowUninstDetails show
-VIProductVersion "2.7.0.0"
+VIProductVersion "2.23.0.0"
 VIAddVersionKey "ProductName" "VELLORA"
 VIAddVersionKey "FileDescription" "VELLORA PDF Studio Installer"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
 VIAddVersionKey "LegalCopyright" "VELLORA contributors — MIT application license"
 
-!define MUI_ICON "${PROJECT_ROOT}\assets\vellora.ico"
-!define MUI_UNICON "${PROJECT_ROOT}\assets\vellora.ico"
+!define MUI_ICON "${PROJECT_ROOT}\assets\vellora-v4-green.ico"
+!define MUI_UNICON "${PROJECT_ROOT}\assets\vellora-v4-green.ico"
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\Vellora.exe"
 !define MUI_FINISHPAGE_RUN_NOTCHECKED

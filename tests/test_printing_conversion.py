@@ -14,10 +14,14 @@ from PySide6.QtWidgets import QApplication
 import pypdfium2 as pdfium
 
 from waraq.core import Document,Overlay
-from waraq.printing import assemble_print_batch,paint_pdf,requested_pages,PrintCancelled
+from waraq.printing import (assemble_print_batch,booklet_order,paint_pdf,requested_pages,
+                            preview_sheet,sheet_grid,PrintCancelled)
+from waraq.app import ProfessionalPrintDialog
 from waraq.rendering import text_overlay,ensure_font_support,render_image
+from waraq.editing import insert_table
 from waraq.conversion import (acquire_wia_image,image_bytes_to_pdf,image_to_pdf,web_to_pdf,
-    export_pdf_office,table_rows,ConversionError,run_process,ConversionCancelled)
+    export_pdf_office,office_page_layouts,office_rgb,sample_box_background,spatial_table,
+    table_rows,ConversionError,run_process,ConversionCancelled)
 from waraq.merge_dialog import MergeDialog
 
 
@@ -69,6 +73,33 @@ class PrintingAndConversionTests(unittest.TestCase):
             output=Path(folder)/'nup.pdf';printer=self.printer(output)
             self.assertEqual(paint_pdf(printer,stream.getvalue(),[0,1],pages_per_sheet=2,grayscale=True),2)
             self.assertEqual(len(PdfReader(output).pages),1)
+
+    def test_professional_nup_booklet_and_poster_layouts(self):
+        self.assertEqual(sheet_grid(6),(3,2))
+        self.assertEqual(booklet_order(list(range(5))),[-1,0,1,-1,-1,2,3,4])
+        writer=PdfWriter()
+        for _ in range(6):writer.add_blank_page(300,400)
+        stream=BytesIO();writer.write(stream);data=stream.getvalue()
+        with tempfile.TemporaryDirectory() as folder:
+            nup=Path(folder)/'six-up.pdf';self.assertEqual(paint_pdf(self.printer(nup),data,list(range(6)),pages_per_sheet=6,page_border=True),6)
+            self.assertEqual(len(PdfReader(nup).pages),1)
+            booklet=Path(folder)/'booklet.pdf';self.assertEqual(paint_pdf(self.printer(booklet),data,list(range(5)),mode='booklet'),5)
+            self.assertEqual(len(PdfReader(booklet).pages),4)
+            poster=Path(folder)/'poster.pdf';self.assertEqual(paint_pdf(self.printer(poster),data,[0],mode='poster',poster_scale=200),1)
+            self.assertGreaterEqual(len(PdfReader(poster).pages),2)
+
+    def test_unified_print_dialog_ranges_and_preview(self):
+        writer=PdfWriter()
+        for _ in range(6):writer.add_blank_page(300,400)
+        stream=BytesIO();writer.write(stream);data=stream.getvalue()
+        dialog=ProfessionalPrintDialog(data,6,current=2,selected=[1,4])
+        dialog.range.setCurrentIndex(dialog.range.findData('current'));self.assertEqual(dialog.indexes(),[2])
+        dialog.range.setCurrentIndex(dialog.range.findData('selected'));self.assertEqual(dialog.indexes(),[1,4])
+        dialog.range.setCurrentIndex(dialog.range.findData('custom'));dialog.pages.setText('2-3, 6');self.assertEqual(dialog.indexes(),[1,2,5])
+        normal=preview_sheet(data,[0,1],pages_per_sheet=2,page_border=True)
+        booklet=preview_sheet(data,[0,1,2],mode='booklet')
+        self.assertFalse(normal.isNull());self.assertGreater(normal.height(),normal.width())
+        self.assertGreater(booklet.width(),booklet.height())
 
     def test_cancel_print_stops_job(self):
         writer=PdfWriter();writer.add_blank_page(200,300);stream=BytesIO();writer.write(stream)
@@ -129,6 +160,26 @@ class PrintingAndConversionTests(unittest.TestCase):
         self.assertEqual(table_rows('Name  Amount\nAli\t10\n\nTotal  10'),[['Name','Amount'],['Ali','10'],['Total','10']])
         with self.assertRaisesRegex(ConversionError,'غير مدعومة'):
             export_pdf_office(b'%PDF-invalid','unused.bin','exe')
+
+    def test_office_spatial_layout_and_background_sampling(self):
+        entries=[{'kind':'text','text':'Name','rect':(30,40,80,15),'size':12},
+                 {'kind':'text','text':'Amount','rect':(220,40,80,15),'size':12},
+                 {'kind':'text','text':'Ali','rect':(30,70,80,15),'size':12},
+                 {'kind':'text','text':'25','rect':(220,70,80,15),'size':12}]
+        self.assertEqual(spatial_table(entries),[['Name','Amount'],['Ali','25']])
+        image=Image.new('RGB',(200,100),(17,34,51));color,variation=sample_box_background(image,(10,10,50,20),(100,50))
+        self.assertEqual(color,(17,34,51));self.assertEqual(variation,0)
+        self.assertEqual(office_rgb('#112233'),0x332211)
+
+        document=Document();writer=PdfWriter();writer.add_blank_page(595,842);stream=BytesIO();writer.write(stream)
+        document.import_bytes('layout.pdf',stream.getvalue());document.add_overlay([0],Overlay('EDITABLE OFFICE TEXT','center',24))
+        layouts=office_page_layouts(document.build_bytes(overlay_renderer=text_overlay))
+        self.assertEqual(len(layouts),1);self.assertTrue(any('EDITABLE' in item['text'] for item in layouts[0]['entries']))
+
+        writer=PdfWriter();writer.add_blank_page(595,842);stream=BytesIO();writer.write(stream)
+        table_pdf=insert_table(stream.getvalue(),(40,100,510,150),[['Name','Department','Amount'],['Ali','Engineering','1250']],rtl=False)
+        self.assertEqual(spatial_table(office_page_layouts(table_pdf)[0]['entries'])[:2],
+                         [['Name','Department','Amount'],['Ali','Engineering','1250']])
 
 
 if __name__=='__main__':unittest.main()

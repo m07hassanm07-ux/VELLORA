@@ -15,6 +15,7 @@ from waraq.professional import (add_attachment, attachment_bytes, list_attachmen
                                 list_form_fields, secure_redact_page, secure_redact_text)
 from waraq.rendering import text_overlay
 from waraq.core import Overlay
+from waraq.form_detection import suggest_text_fields
 
 
 def sample_form():
@@ -62,8 +63,36 @@ class ProfessionalTests(unittest.TestCase):
         self.assertEqual(fields["department"].options, ("HR", "IT"))
         filled = fill_form_fields(data, {"amount_a": "30", "amount_b": "12.25"})
         self.assertEqual(str(PdfReader(BytesIO(filled)).get_fields()["total"]["/V"]), "42.25")
+        data = add_form_field(data, 0, "calculation", "average", (20, 290, 160, 22),
+                              options=["total", "amount_b"], calculation="AVG")
+        filled = fill_form_fields(data, {"amount_a": "٣٠", "amount_b": "١٢٫٢٥"})
+        updated = PdfReader(BytesIO(filled)).get_fields()
+        self.assertEqual(str(updated["average"]["/V"]), "27.25")
+        self.assertEqual(str(updated["amount_b"]["/V"]), "12.25")
+        with self.assertRaisesRegex(ValueError, "رقمًا صالحًا"):
+            fill_form_fields(data, {"amount_a": "NaN"})
+        with self.assertRaisesRegex(ValueError, "اختر قيمة"):
+            fill_form_fields(data, {"department": "Unknown"})
         with self.assertRaisesRegex(ValueError, "بهذا الاسم"):
             add_form_field(data, 0, "text", "full_name", (20, 200, 100, 20))
+
+    def test_required_field_rejects_blank(self):
+        data = add_form_field(sample_form(), 0, "text", "required_name", (20, 130, 150, 20), required=True)
+        with self.assertRaisesRegex(ValueError, "مطلوب"):
+            fill_form_fields(data, {"required_name": " "})
+        filled = fill_form_fields(data, {"required_name": "Ali"})
+        self.assertEqual(PdfReader(BytesIO(filled)).get_fields()["required_name"]["/V"], "Ali")
+
+    def test_suggests_text_blank_and_skips_existing_widget(self):
+        data = text_overlay(300, 400, Overlay("Name: __________________", "center", 16))
+        suggestions = suggest_text_fields(data, 0)
+        self.assertEqual(len(suggestions), 1)
+        label, rect = suggestions[0]
+        self.assertEqual(label, "Name")
+        with_field = add_form_field(data, 0, "text", "name", rect)
+        reader = PdfReader(BytesIO(with_field))
+        widget = reader.pages[0]["/Annots"][0].get_object()
+        self.assertEqual(suggest_text_fields(with_field, 0, [widget["/Rect"]]), [])
 
     def test_export_images_and_text(self):
         writer = PdfWriter(); writer.add_blank_page(144, 72); stream = BytesIO(); writer.write(stream)

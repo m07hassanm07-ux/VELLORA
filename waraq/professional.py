@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 import ctypes
+from decimal import Decimal, InvalidOperation
 import json
+import math
 import re
 
 import pypdfium2 as pdfium
@@ -42,6 +44,8 @@ class SignatureInfo:
 
 FIELD_KINDS = {"text": "/Tx", "checkbox": "/Btn", "choice": "/Ch",
                "button": "/Btn", "calculation": "/Tx"}
+CALCULATIONS = {"SUM": sum, "AVG": lambda items: sum(items) / len(items),
+                "PRD": math.prod, "MIN": min, "MAX": max}
 
 
 @dataclass(frozen=True)
@@ -85,30 +89,67 @@ def fill_form_fields(data: bytes, values: dict[str, str], *, flatten: bool = Fal
     if not values:
         raise ValueError("لم تُدخل قيمًا للنموذج.")
     reader = _reader(data, password)
-    known = set((reader.get_fields() or {}).keys())
-    unknown = sorted(set(values) - known)
+    known = reader.get_fields() or {}
+    unknown = sorted(set(values) - known.keys())
     if unknown:
         raise ValueError("حقول غير موجودة: " + "، ".join(unknown))
     values = dict(values)
-    # Recalculate only formulas created by Waraqa.  Arbitrary PDF JavaScript is
-    # deliberately never evaluated.
-    raw_fields = reader.trailer["/Root"].get("/AcroForm", {}).get("/Fields", [])
-    for reference in raw_fields:
-        field = reference.get_object()
-        field_name = str(field.get("/T", ""))
-        sources = field.get("/WaraqCalcSources")
-        if not sources:
+    definitions = {name: (field.indirect_reference.get_object() if field.indirect_reference else field)
+                   for name, field in known.items()}
+    formulas = {name: field for name, field in definitions.items() if field.get("/WaraqCalcSources")}
+    active, computed = set(), {}
+
+    def numeric(name):
+        if name not in known or known[name].get("/FT") != "/Tx":
+            raise ValueError(f"حقل الحساب «{name}» مفقود أو ليس حقلًا نصيًا.")
+        if name in computed:
+            return computed[name]
+        if name in active:
+            raise ValueError("تعتمد حقول الحساب على بعضها بشكل دائري.")
+        if name in formulas:
+            active.add(name)
+            formula = formulas[name]
+            operation = CALCULATIONS.get(str(formula.get("/WaraqCalcOperation", "SUM")))
+            if operation is None:
+                raise ValueError(f"العملية الحسابية في «{name}» غير مدعومة.")
+            result = operation([numeric(str(source)) for source in formula["/WaraqCalcSources"]])
+            active.remove(name)
+            if not result.is_finite() or abs(result.adjusted()) > 100:
+                raise ValueError(f"نتيجة «{name}» خارج النطاق المدعوم.")
+            computed[name] = result
+            return result
+        raw = str(values.get(name, known[name].get("/V", "0"))).strip().replace("٬", ",").replace("٫", ".")
+        if re.fullmatch(r"[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?", raw):
+            raw = raw.replace(",", "")
+        try:
+            result = Decimal(raw)
+            if not result.is_finite() or abs(result.adjusted()) > 100 or len(raw) > 200:
+                raise InvalidOperation
+            if name in values and not str(values[name]).isascii():
+                # Standard PDF form fonts can display ASCII digits reliably.
+                values[name] = format(result, "f")
+            return result
+        except InvalidOperation as exc:
+            raise ValueError(f"الحقل «{name}» يجب أن يحتوي رقمًا صالحًا لإجراء الحساب.") from exc
+
+    for name in formulas:
+        values[name] = format(numeric(name).normalize(), "f")
+    for name, field in known.items():
+        kind = field.get("/FT")
+        flags = int(field.get("/Ff", 0))
+        if kind not in ("/Tx", "/Ch"):
             continue
-        total = 0.0
-        for source in sources:
-            source_name = str(source)
-            source_field = (reader.get_fields() or {}).get(source_name, {})
-            raw = values.get(source_name, str(source_field.get("/V", "0")))
-            try:
-                total += float(str(raw).strip().replace(",", ""))
-            except ValueError:
-                raise ValueError(f"الحقل «{source_name}» يجب أن يحتوي رقمًا لإجراء الحساب.")
-        values[str(field_name)] = str(int(total)) if total.is_integer() else f"{total:.10g}"
+        value = str(values.get(name, field.get("/V", "")))
+        if flags & 2 and not value.strip():
+            raise ValueError(f"الحقل «{name}» مطلوب.")
+        maximum = definitions[name].get("/MaxLen")
+        if name in values and kind == "/Tx" and maximum and len(value) > int(maximum):
+            raise ValueError(f"الحقل «{name}» يقبل {maximum} حرفًا على الأكثر.")
+        if name in values and kind == "/Ch" and value and not flags & (1 << 18):
+            options = field.get("/Opt") or []
+            allowed = {str(option[0] if isinstance(option, ArrayObject) else option) for option in options}
+            if allowed and value not in allowed:
+                raise ValueError(f"اختر قيمة من القائمة للحقل «{name}».")
     writer = PdfWriter()
     writer.append(reader, import_outline=True)
     writer.set_need_appearances_writer(False)
@@ -121,7 +162,8 @@ def fill_form_fields(data: bytes, values: dict[str, str], *, flatten: bool = Fal
 
 def add_form_field(data: bytes, page_index: int, kind: str, name: str,
                    rect: tuple[float, float, float, float], *, value: str = "",
-                   options: list[str] | None = None) -> bytes:
+                   options: list[str] | None = None, calculation: str = "SUM",
+                   required: bool = False) -> bytes:
     """Create one interoperable AcroForm widget at viewer coordinates."""
     kind = kind.lower().strip(); name = name.strip()
     if kind not in FIELD_KINDS:
@@ -160,6 +202,8 @@ def add_form_field(data: bytes, page_index: int, kind: str, name: str,
         NameObject("/Rect"): RectangleObject(box), NameObject("/F"): NumberObject(4),
         NameObject("/P"): page.indirect_reference,
     })
+    if required and kind in {"text", "choice"}:
+        field[NameObject("/Ff")] = NumberObject(2)
     if kind == "checkbox":
         field[NameObject("/V")] = NameObject("/Yes" if value.casefold() in {"yes", "true", "1", "on"} else "/Off")
         field[NameObject("/AS")] = field[NameObject("/V")]
@@ -176,16 +220,19 @@ def add_form_field(data: bytes, page_index: int, kind: str, name: str,
             if not choices: raise ValueError("أضف خيارًا واحدًا على الأقل للقائمة.")
             field[NameObject("/Opt")] = ArrayObject([TextStringObject(item[:500]) for item in choices])
         elif kind == "calculation":
+            if calculation not in CALCULATIONS:
+                raise ValueError("العملية الحسابية غير مدعومة.")
             known = reader.get_fields() or {}
             sources = [str(item).strip() for item in (options or []) if str(item).strip()]
-            missing = [item for item in sources if item not in known]
+            missing = [item for item in sources if item not in known or known[item].get("/FT") != "/Tx"]
             if not sources:
                 raise ValueError("اختر حقلًا رقميًا واحدًا على الأقل للحساب.")
             if missing:
                 raise ValueError("حقول الحساب غير موجودة: " + "، ".join(missing))
             field[NameObject("/Ff")] = NumberObject(1)
             field[NameObject("/WaraqCalcSources")] = ArrayObject([TextStringObject(item) for item in sources])
-            script = f'AFSimple_Calculate("SUM", {json.dumps(sources, ensure_ascii=False)});'
+            field[NameObject("/WaraqCalcOperation")] = TextStringObject(calculation)
+            script = f'AFSimple_Calculate("{calculation}", {json.dumps(sources, ensure_ascii=True)});'
             field[NameObject("/AA")] = DictionaryObject({NameObject("/C"): DictionaryObject({
                 NameObject("/S"): NameObject("/JavaScript"), NameObject("/JS"): TextStringObject(script)})})
     reference = writer._add_object(field)
@@ -199,6 +246,10 @@ def add_form_field(data: bytes, page_index: int, kind: str, name: str,
     fields = acroform.get("/Fields")
     if fields is None: fields = ArrayObject(); acroform[NameObject("/Fields")] = fields
     fields.append(reference)
+    if kind == "calculation":
+        if "/CO" not in acroform:
+            acroform[NameObject("/CO")] = ArrayObject()
+        acroform["/CO"].append(reference)
     acroform[NameObject("/NeedAppearances")] = BooleanObject(True)
     if kind not in {"checkbox", "button"}:
         font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),

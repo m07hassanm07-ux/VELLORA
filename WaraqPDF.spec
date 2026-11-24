@@ -14,7 +14,9 @@ rejected_cas = Path(sys.base_prefix) / 'Lib' / 'codex-rejected-cas.pem'
 if rejected_cas.is_file():
     datas.append((str(rejected_cas), '.'))
 datas.append((str(ROOT / 'assets' / 'ocr'), 'ocr-data'))
-datas.append((str(ROOT / 'assets' / 'vellora-icon.png'), '.'))
+datas.append((str(ROOT / 'assets' / 'vellora-icon-v4-green.png'), '.'))
+datas.append((str(ROOT / 'assets' / 'vellora-brand-mark-v3.png'), '.'))
+datas.append((str(ROOT / 'assets' / 'icons'), 'icons'))
 
 a = Analysis(
     [str(ROOT / 'run.py')],
@@ -34,5 +36,5 @@ if os.name == 'nt':
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='Vellora', debug=False,
           bootloader_ignore_signals=False, strip=False, upx=False, console=False,
-          disable_windowed_traceback=False, icon=str(ROOT / 'assets' / 'vellora.ico') if (ROOT / 'assets' / 'vellora.ico').exists() else None)
+          disable_windowed_traceback=False, icon=str(ROOT / 'assets' / 'vellora-v4-green.ico') if (ROOT / 'assets' / 'vellora-v4-green.ico').exists() else None)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='Vellora')

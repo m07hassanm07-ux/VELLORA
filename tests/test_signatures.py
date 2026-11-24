@@ -12,6 +12,7 @@ from cryptography.x509.oid import NameOID
 from pypdf import PdfWriter
 
 from waraq.signatures import sign_pkcs12,validate_signatures
+from waraq.signing_requests import RequestStore, create_request, draft_email, inspect_return, request_fields
 
 
 class SignatureTests(unittest.TestCase):
@@ -27,6 +28,36 @@ class SignatureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'test.pfx';path.write_bytes(pfx)
             signed=sign_pkcs12(source.getvalue(),path,'secret-pass',reason='Approval',location='Cairo')
+            request = create_request('اختبار', ['first@example.com', 'second@example.com'], source.getvalue())
+            store = RequestStore(Path(directory)/'requests')
+            store.save(request)
+            self.assertEqual(store.load(request['id']), request)
+            self.assertNotIn(b'first@example.com', store.path(request['id']).read_bytes())
+            from email import policy
+            from email.parser import BytesParser
+            mail = BytesParser(policy=policy.default).parsebytes(draft_email(request))
+            self.assertEqual(str(mail['To']), 'first@example.com')
+            self.assertEqual(next(mail.iter_attachments()).get_payload(decode=True), request['pdf'])
+            first, second = request_fields(request['pdf'])
+            from pyhanko.pdf_utils.generic import TextStringObject, pdf_name
+            from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+            modified = IncrementalPdfFileWriter(BytesIO(request['pdf']))
+            modified.root[pdf_name('/Lang')] = TextStringObject('fr')
+            modified.update_root()
+            changed_pdf = BytesIO()
+            modified.write(changed_pdf)
+            modified_signed = sign_pkcs12(changed_pdf.getvalue(), path, 'secret-pass', field_name=first)
+            with self.assertRaises(ValueError):
+                inspect_return(request, modified_signed)
+            wrong = sign_pkcs12(request['pdf'], path, 'secret-pass', field_name=second)
+            with self.assertRaises(ValueError):
+                inspect_return(request, wrong)
+            first_signed = sign_pkcs12(request['pdf'], path, 'secret-pass', field_name=first)
+            self.assertIn('Waraqa Test Signer', inspect_return(request, first_signed)[0])
+            request['signers'][0]['status'] = 'signed'
+            request['pdf'] = first_signed
+            second_signed = sign_pkcs12(first_signed, path, 'secret-pass', field_name=second)
+            self.assertIn('Waraqa Test Signer', inspect_return(request, second_signed)[0])
         results=validate_signatures(signed)
         self.assertEqual(len(results),1);self.assertTrue(results[0].intact);self.assertTrue(results[0].valid)
         self.assertFalse(results[0].trusted);self.assertIn('Waraqa Test Signer',results[0].signer)

@@ -60,11 +60,12 @@ def text_overlay(width: float, height: float, overlay: Overlay) -> bytes:
     return bytes(data)
 
 
-def render_image(pdf: pdfium.PdfDocument, index: int, scale: float = 1.0, rotation: int = 0) -> QImage:
+def render_image(pdf: pdfium.PdfDocument, index: int, scale: float = 1.0, rotation: int = 0,
+                 draw_annotations: bool = True) -> QImage:
     page = pdf[index]
     bitmap = None
     try:
-        bitmap = page.render(scale=max(0.05, scale), rotation=rotation)
+        bitmap = page.render(scale=max(0.05, scale), rotation=rotation, draw_annots=draw_annotations)
         pil = bitmap.to_pil().convert("RGBA")
         raw = pil.tobytes()
         # Copy owns its pixels after bitmap/page release.

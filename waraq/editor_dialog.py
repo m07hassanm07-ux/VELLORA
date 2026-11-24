@@ -1,18 +1,21 @@
 """A page editor with explicit selection, draft preview and transactional apply."""
 from pathlib import Path
+import sys
 
 import pypdfium2 as pdfium
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QImage, QImageReader, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QSize, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QImage, QImageReader, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform, QTextCursor
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFrame,
     QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout,
     QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QInputDialog,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QSplitter, QVBoxLayout, QWidget,
-    QTableWidget, QTableWidgetItem, QMenu)
+    QTableWidget, QTableWidgetItem, QMenu, QGraphicsOpacityEffect)
 
-from .editing import edit_page, inspect_page, prepare_page, insert_table, infer_table, replace_table
+from .editing import (edit_page, following_flow_indexes, inspect_page, prepare_page,
+                      insert_table, infer_table, replace_table, transform_objects,
+                      reorder_objects, rotate_objects)
 from .rendering import render_image, ensure_font_support
-from .textlayout import group_text
+from .textlayout import extract_text, group_text
 from .fonts import install_font
 
 
@@ -21,6 +24,7 @@ class EditCanvas(QGraphicsView):
     rect_changed = Signal(QRectF)
     text_double_clicked = Signal(QPointF)
     delete_requested = Signal()
+    point_toggled = Signal(QPointF)
 
     def __init__(self):
         super().__init__()
@@ -104,6 +108,8 @@ class EditCanvas(QGraphicsView):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             point=self.mapToScene(event.position().toPoint())
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.point_toggled.emit(point);event.accept();return
             if self.selection is not None:
                 rect=self.selection.rect();corners=[rect.topLeft(),rect.topRight(),rect.bottomLeft(),rect.bottomRight()]
                 tolerance=max(6,10/self.transform().m11())
@@ -174,17 +180,26 @@ class EditCanvas(QGraphicsView):
 class TableEditorDialog(QDialog):
     def __init__(self,rows=None,parent=None):
         super().__init__(parent);self.setWindowTitle('محرر الجدول — VELLORA');self.resize(760,500)
-        layout=QVBoxLayout(self);layout.addWidget(QLabel('حرّر الخلايا مباشرة. يمكنك إضافة أو حذف صفوف وأعمدة قبل وضع الجدول على الصفحة.'))
+        layout=QVBoxLayout(self);layout.addWidget(QLabel('حرّر الخلايا مباشرة، واسحب حدود العناوين لتغيير المقاسات، أو حدد عدة خلايا لدمجها.'))
         rows=rows or [['العنوان 1','العنوان 2'],['قيمة 1','قيمة 2']];columns=max(len(row) for row in rows)
         self.table=QTableWidget(len(rows),columns)
         for r,row in enumerate(rows):
             for c,value in enumerate(row):self.table.setItem(r,c,QTableWidgetItem(str(value)))
         self.table.horizontalHeader().setStretchLastSection(True);layout.addWidget(self.table,1)
         tools=QHBoxLayout()
-        for label,callback in [('إضافة صف',self.add_row),('حذف صف',self.remove_row),('إضافة عمود',self.add_column),('حذف عمود',self.remove_column)]:
+        for label,callback in [('إضافة صف',self.add_row),('حذف صف',self.remove_row),('إضافة عمود',self.add_column),('حذف عمود',self.remove_column),
+                               ('دمج الخلايا',self.merge_cells),('فك الدمج',self.unmerge_cell)]:
             button=QPushButton(label);button.clicked.connect(callback);tools.addWidget(button)
         self.header=QCheckBox('الصف الأول عنوان');self.header.setChecked(True);self.rtl=QCheckBox('ترتيب الأعمدة من اليمين');self.rtl.setChecked(True)
         tools.addWidget(self.header);tools.addWidget(self.rtl);tools.addStretch();layout.addLayout(tools)
+        style=QHBoxLayout();style.addWidget(QLabel('لون الحدود'))
+        self.border_color=QComboBox()
+        for label,value in [('كحلي','#334e5c'),('أسود','#172a32'),('رمادي','#7b8790'),('أحمر','#b62432')]:self.border_color.addItem(label,value)
+        style.addWidget(self.border_color);style.addWidget(QLabel('السُمك'))
+        self.border_width=QDoubleSpinBox();self.border_width.setRange(.25,6);self.border_width.setSingleStep(.25);self.border_width.setValue(1);self.border_width.setMaximumWidth(70);style.addWidget(self.border_width)
+        style.addWidget(QLabel('لون العنوان'));self.header_color=QComboBox()
+        for label,value in [('أزرق فاتح','#dcefe9'),('رمادي فاتح','#e8edf0'),('أحمر فاتح','#f8dfe3'),('بدون لون','#ffffff')]:self.header_color.addItem(label,value)
+        style.addWidget(self.header_color);style.addStretch();layout.addLayout(style)
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Ok|QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText('استخدام الجدول');buttons.button(QDialogButtonBox.StandardButton.Cancel).setText('إلغاء')
         buttons.accepted.connect(self.accept);buttons.rejected.connect(self.reject);layout.addWidget(buttons)
@@ -195,8 +210,41 @@ class TableEditorDialog(QDialog):
     def add_column(self):self.table.insertColumn(self.table.columnCount())
     def remove_column(self):
         if self.table.columnCount()>1:self.table.removeColumn(max(0,self.table.currentColumn()))
+    def merge_cells(self):
+        ranges=self.table.selectedRanges()
+        if len(ranges)!=1:
+            QMessageBox.information(self,'دمج الخلايا','حدد نطاقًا مستطيلًا واحدًا من الخلايا أولًا.');return
+        area=ranges[0];rows=area.rowCount();columns=area.columnCount()
+        if rows==1 and columns==1:return
+        values=[]
+        for row in range(area.topRow(),area.bottomRow()+1):
+            for column in range(area.leftColumn(),area.rightColumn()+1):
+                item=self.table.item(row,column)
+                if item and item.text().strip():values.append(item.text().strip())
+                if row!=area.topRow() or column!=area.leftColumn():self.table.setItem(row,column,QTableWidgetItem(''))
+        self.table.setSpan(area.topRow(),area.leftColumn(),rows,columns)
+        self.table.setItem(area.topRow(),area.leftColumn(),QTableWidgetItem(' '.join(values)))
+    def unmerge_cell(self):
+        row=max(0,self.table.currentRow());column=max(0,self.table.currentColumn())
+        for anchor_row in range(self.table.rowCount()):
+            for anchor_column in range(self.table.columnCount()):
+                row_span=self.table.rowSpan(anchor_row,anchor_column);column_span=self.table.columnSpan(anchor_row,anchor_column)
+                if anchor_row<=row<anchor_row+row_span and anchor_column<=column<anchor_column+column_span:
+                    self.table.setSpan(anchor_row,anchor_column,1,1);return
     def values(self):
         return [[self.table.item(r,c).text() if self.table.item(r,c) else '' for c in range(self.table.columnCount())] for r in range(self.table.rowCount())]
+    def spans(self):
+        result=[];covered=set()
+        for row in range(self.table.rowCount()):
+            for column in range(self.table.columnCount()):
+                if (row,column) in covered:continue
+                row_span=self.table.rowSpan(row,column);column_span=self.table.columnSpan(row,column)
+                if row_span>1 or column_span>1:
+                    result.append((row,column,row_span,column_span))
+                    covered.update((r,c) for r in range(row,row+row_span) for c in range(column,column+column_span))
+        return result
+    def column_widths(self):return [self.table.columnWidth(column) for column in range(self.table.columnCount())]
+    def row_heights(self):return [self.table.rowHeight(row) for row in range(self.table.rowCount())]
 
 
 class PageEditorDialog(QDialog):
@@ -217,19 +265,33 @@ class PageEditorDialog(QDialog):
         self.history, self.future = [], []
         self.mode = 'select'
         self.image = None; self.image_opacity = 1.0; self.table_rows = None;self.table_indexes=[];self.table_header=True;self.table_rtl=True
+        self.table_spans=[];self.table_column_widths=None;self.table_row_heights=None
+        self.table_border_color='#334e5c';self.table_border_width=1;self.table_header_color='#dcefe9'
         self.element_clipboard = None
         self.loading = False
         self.draft = None
         self.pending = False
         layout = QVBoxLayout(self)
         toolbar = QHBoxLayout()
-        def compact(label,callback):
-            button=QPushButton(label);button.setStyleSheet('padding:4px 8px;min-height:18px;');button.clicked.connect(callback);toolbar.addWidget(button);return button
-        compact('تحديد',self.select_mode);compact('نص',self.new_text);compact('صورة',self.choose_image);compact('جدول',self.new_table);compact('تحرير جدول',self.edit_existing_table)
-        image_tools=QPushButton('أدوات الصورة');image_tools.setStyleSheet('padding:4px 8px;min-height:18px;');image_menu=QMenu(image_tools)
-        image_menu.addAction('استبدال الصورة',self.replace_selected_image);image_menu.addAction('قص الصورة',self.crop_image);image_menu.addAction('تدوير 90°',self.rotate_image);image_tools.setMenu(image_menu);toolbar.addWidget(image_tools)
+        def compact(label,callback,icon=None):
+            button=QPushButton('' if icon else label);button.setToolTip(label);button.setAccessibleName(label);button.setStyleSheet('padding:3px 6px;min-height:18px;');button.clicked.connect(callback)
+            if icon:
+                button.setObjectName('lightIcon');button.setIcon(self.tool_icon(icon))
+                button.setIconSize(QSize(18,18));button.setFixedSize(30,27)
+            toolbar.addWidget(button);return button
+        compact('تحديد عنصر على الورقة',self.select_mode,'edit');compact('نص جديد',self.new_text,'text');compact('إضافة صورة',self.choose_image,'image');compact('إدراج جدول',self.new_table,'table');compact('تحرير جدول',self.edit_existing_table,'table')
+        compact('قص الصورة',self.crop_image,'scissors')
+        compact('تدوير الصورة 90°',self.rotate_image,'rotate')
+        compact('استبدال الصورة',self.replace_selected_image,'image')
         clipboard=QPushButton('العناصر');clipboard.setStyleSheet('padding:4px 8px;min-height:18px;');clipboard_menu=QMenu(clipboard)
         clipboard_menu.addAction('نسخ العنصر',self.copy_selected_element);clipboard_menu.addAction('لصق العنصر',self.paste_element);clipboard_menu.addAction('تكرار العنصر',self.duplicate_selected);clipboard.setMenu(clipboard_menu);toolbar.addWidget(clipboard)
+        clipboard_menu.addSeparator()
+        clipboard_menu.addAction('تحرير نص الصفحة كاملة…', self.edit_full_page_text)
+        align=QPushButton('محاذاة');align.setStyleSheet('padding:4px 8px;min-height:18px;');align_menu=QMenu(align)
+        for label,target in [('يسار الصفحة','left'),('منتصف أفقي','hcenter'),('يمين الصفحة','right'),
+                             ('أعلى الصفحة','top'),('منتصف رأسي','vcenter'),('أسفل الصفحة','bottom')]:
+            align_menu.addAction(label,lambda checked=False,value=target:self.align_selection(value))
+        align.setMenu(align_menu);toolbar.addWidget(align)
         self.ocr_button=compact('OCR',self.ocr_requested.emit)
         self.undo_button=compact('تراجع',self.undo);self.redo_button=compact('إعادة',self.redo);toolbar.addStretch()
         previous=compact('‹ السابقة',lambda:self.navigate_page(-1));following=compact('التالية ›',lambda:self.navigate_page(1))
@@ -239,10 +301,13 @@ class PageEditorDialog(QDialog):
         self.canvas.rect_changed.connect(self.set_rect)
         self.canvas.text_double_clicked.connect(self.direct_pick)
         self.canvas.delete_requested.connect(self.delete_selected)
+        self.canvas.point_toggled.connect(self.toggle_pick)
         self.direct_editor = None
         self.direct_proxy = None
         self.direct_toolbar_proxy = None
         self._direct_sync = False
+        self._flow_base_rect = None
+        self._selection_base_rect = None
         panel = QWidget(); panel.setMaximumWidth(395); panel.setMinimumWidth(300)
         controls = QVBoxLayout(panel)
         self.status = QLabel(); self.status.setWordWrap(True); controls.addWidget(self.status)
@@ -267,6 +332,9 @@ class PageEditorDialog(QDialog):
         self.bold = QCheckBox('خط عريض'); self.bold.toggled.connect(self.mark_pending); form.addRow('', self.bold)
         self.auto_fit = QCheckBox('ملاءمة النص تلقائيًا داخل المساحة'); self.auto_fit.setChecked(True)
         self.auto_fit.toggled.connect(self.mark_pending); form.addRow('', self.auto_fit)
+        self.flow_following = QCheckBox('تحريك المحتوى التالي مع تمدد الفقرة'); self.flow_following.setChecked(True)
+        self.flow_following.setToolTip('يحافظ على حجم الخط ويحرّك عناصر العمود الموجودة أسفل الفقرة عند زيادة النص.')
+        self.flow_following.toggled.connect(self.mark_pending); form.addRow('', self.flow_following)
         self.color = QComboBox()
         for label, value in [('أسود', '#172a32'), ('أزرق', '#174b91'), ('أخضر', '#087a63'), ('أحمر', '#b62432')]:
             self.color.addItem(label, value)
@@ -296,10 +364,40 @@ class PageEditorDialog(QDialog):
         self.format_bar=QWidget();quick = QHBoxLayout(self.format_bar);quick.setContentsMargins(2,2,2,2);quick.setSpacing(4)
         quick.addWidget(QLabel('الخط')); quick.addWidget(self.font, 2)
         quick.addWidget(QLabel('الحجم')); quick.addWidget(self.size)
+        quick.addWidget(self.group_mode)
         quick.addWidget(self.bold); quick.addWidget(self.color)
-        quick.addWidget(self.alignment); quick.addWidget(self.auto_fit);quick.addWidget(QLabel('شفافية الصورة'));quick.addWidget(self.opacity)
+        quick.addWidget(self.alignment); quick.addWidget(self.auto_fit); quick.addWidget(self.flow_following)
         quick.addStretch(); quick.addWidget(preview);quick.addWidget(self.before_after_button);quick.addWidget(self.delete_button); quick.addWidget(self.apply_button)
         layout.addWidget(self.format_bar);self.format_bar.hide()
+        self.image_bar=QFrame();self.image_bar.setObjectName('imageProperties')
+        self.image_bar.setStyleSheet('QFrame#imageProperties { background:#182433; border:1px solid #3d5063; border-radius:10px; } QFrame#imageProperties QLabel { color:white; } QFrame#imageProperties QPushButton { background:#263b4b; color:white; border:1px solid #435a6c; padding:5px 9px; } QFrame#imageProperties QPushButton:hover { background:#087a63; border-color:#087a63; }')
+        image_quick=QHBoxLayout(self.image_bar);image_quick.setContentsMargins(8,4,8,4);image_quick.setSpacing(5)
+        image_quick.addWidget(QLabel('خصائص الصورة'))
+        replace=QPushButton('استبدال');replace.clicked.connect(self.replace_selected_image);image_quick.addWidget(replace)
+        crop=QPushButton('قص');crop.clicked.connect(self.crop_image);image_quick.addWidget(crop)
+        rotate=QPushButton('تدوير 90°');rotate.clicked.connect(self.rotate_image);image_quick.addWidget(rotate)
+        image_quick.addWidget(QLabel('الشفافية'));image_quick.addWidget(self.opacity)
+        front=QPushButton('للأمام');front.clicked.connect(lambda:self.reorder_selected(True));image_quick.addWidget(front)
+        back=QPushButton('للخلف');back.clicked.connect(lambda:self.reorder_selected(False));image_quick.addWidget(back)
+        align_image=QPushButton('محاذاة');align_image_menu=QMenu(align_image)
+        for label,target in [('يسار','left'),('وسط أفقي','hcenter'),('يمين','right'),('أعلى','top'),('وسط رأسي','vcenter'),('أسفل','bottom')]:
+            align_image_menu.addAction(label,lambda checked=False,value=target:self.align_selection(value))
+        align_image.setMenu(align_image_menu);image_quick.addWidget(align_image)
+        image_quick.addStretch()
+        image_delete=QPushButton('حذف');image_delete.setStyleSheet('color:#ff9aa5;');image_delete.clicked.connect(self.delete_selected);image_quick.addWidget(image_delete)
+        image_apply=QPushButton('✓ تطبيق');image_apply.clicked.connect(self.apply_change);image_quick.addWidget(image_apply)
+        layout.addWidget(self.image_bar);self.image_bar.hide()
+        self.table_bar=QFrame();self.table_bar.setObjectName('tableProperties')
+        self.table_bar.setStyleSheet('QFrame#tableProperties { background:#182433; border:1px solid #3d5063; border-radius:10px; } QFrame#tableProperties QLabel,QFrame#tableProperties QCheckBox { color:white; } QFrame#tableProperties QPushButton { background:#263b4b; color:white; border:1px solid #435a6c; padding:5px 9px; } QFrame#tableProperties QPushButton:hover { background:#087a63; border-color:#087a63; }')
+        table_quick=QHBoxLayout(self.table_bar);table_quick.setContentsMargins(8,4,8,4);table_quick.setSpacing(5)
+        table_quick.addWidget(QLabel('خصائص الجدول'))
+        edit_cells=QPushButton('تحرير الخلايا');edit_cells.clicked.connect(self.edit_table_values);table_quick.addWidget(edit_cells)
+        self.table_header_quick=QCheckBox('صف عنوان');self.table_header_quick.setChecked(True);self.table_header_quick.toggled.connect(self.table_header_changed);table_quick.addWidget(self.table_header_quick)
+        self.table_rtl_quick=QCheckBox('من اليمين');self.table_rtl_quick.setChecked(True);self.table_rtl_quick.toggled.connect(self.table_rtl_changed);table_quick.addWidget(self.table_rtl_quick)
+        table_quick.addWidget(QLabel('سمك الحدود'));self.table_border_quick=QDoubleSpinBox();self.table_border_quick.setRange(0,8);self.table_border_quick.setSingleStep(.5);self.table_border_quick.setValue(1);self.table_border_quick.setMaximumWidth(70);self.table_border_quick.valueChanged.connect(self.table_border_changed);table_quick.addWidget(self.table_border_quick)
+        table_quick.addStretch();table_apply=QPushButton('✓ تطبيق');table_apply.clicked.connect(self.apply_change);table_quick.addWidget(table_apply)
+        layout.addWidget(self.table_bar);self.table_bar.hide()
+        self._bar_animations=[]
         # Retain non-visual selection/geometry controls as state holders without
         # showing the former side panel.
         panel.setParent(self); panel.hide()
@@ -312,6 +410,8 @@ class PageEditorDialog(QDialog):
         self.font.currentFontChanged.connect(self.update_direct_style)
         self.size.valueChanged.connect(self.update_direct_style)
         self.bold.toggled.connect(self.update_direct_style)
+        self.alignment.currentIndexChanged.connect(self.update_direct_style)
+        self.color.currentIndexChanged.connect(self.update_direct_style)
         self.shortcuts = []
         for keys, callback in [('Ctrl+Return', self.apply_change), ('Ctrl+Enter', self.apply_change),
                                ('Ctrl+Z', self.undo), ('Ctrl+Shift+Z', self.redo),
@@ -321,6 +421,18 @@ class PageEditorDialog(QDialog):
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             shortcut.activated.connect(callback); self.shortcuts.append(shortcut)
         self.reload()
+
+    def reveal_bar(self,bar):
+        """Show a contextual bar with a restrained enterprise fade."""
+        bar.show();effect=QGraphicsOpacityEffect(bar);bar.setGraphicsEffect(effect);effect.setOpacity(0)
+        animation=QPropertyAnimation(effect,b'opacity',bar);animation.setDuration(150)
+        animation.setStartValue(0.0);animation.setEndValue(1.0);animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._bar_animations=(self._bar_animations+[animation])[-6:]
+        animation.finished.connect(lambda b=bar:b.setGraphicsEffect(None));animation.start()
+
+    def tool_icon(self,name):
+        root=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parents[1]));packaged=root/'icons'/f'{name}.svg';development=Path(__file__).resolve().parents[1]/'assets'/'icons'/f'{name}.svg'
+        return QIcon(str(packaged if packaged.is_file() else development))
 
     def import_font(self):
         path, _ = QFileDialog.getOpenFileName(self, 'استيراد خط', '', 'ملفات الخطوط (*.ttf *.otf *.ttc)')
@@ -344,12 +456,15 @@ class PageEditorDialog(QDialog):
         self.mode = 'select'; self.image = None; self.text.clear(); self.draft = None
         self.canvas.set_page(self.data)
         self.direct_editor = None; self.direct_proxy = None; self.direct_toolbar_proxy = None
+        self._flow_base_rect = None
+        self._selection_base_rect = None
         self.status.setText(f'{len(self.entries)} عنصرًا نصيًا أو صورة قابلًا للتحديد' if self.entries else 'لا توجد نصوص أو صور مستقلة قابلة للتعديل. يمكنك إضافة نص أو صورة؛ النص داخل المسح الضوئي يحتاج OCR.')
         self.ocr_button.setVisible(not bool(self.entries))
         self.delete_button.setEnabled(False)
         self.undo_button.setEnabled(bool(self.history)); self.redo_button.setEnabled(bool(self.future))
         self.pending = False
         self.format_bar.hide()
+        self.image_bar.hide();self.table_bar.hide()
 
     def selected_entries(self):
         return [self.entries[self.objects.row(item)] for item in self.objects.selectedItems()]
@@ -406,6 +521,34 @@ class PageEditorDialog(QDialog):
         self.clear_draft()
         self.pending = True
 
+    def align_selection(self, target):
+        """Align the selected object/group to the page without a side panel."""
+        if not self.selected_entries():
+            QMessageBox.information(self,'المحاذاة','حدد نصًا أو صورة على الورقة أولًا.');return
+        rect=self.rect()
+        if target=='left':rect.moveLeft(0)
+        elif target=='hcenter':rect.moveCenter(QPointF(self.width/2,rect.center().y()))
+        elif target=='right':rect.moveRight(self.width)
+        elif target=='top':rect.moveTop(0)
+        elif target=='vcenter':rect.moveCenter(QPointF(rect.center().x(),self.height/2))
+        elif target=='bottom':rect.moveBottom(self.height)
+        else:return
+        self.set_rect(rect)
+        self.status.setText('تمت محاذاة العنصر. اضغط تطبيق أو انقر خارجه لحفظ موضعه.')
+
+    def reorder_selected(self, front=True):
+        indexes=self.selected_indexes()
+        if not indexes:return
+        try:self.commit(reorder_objects(self.data,indexes,front))
+        except Exception as exc:QMessageBox.warning(self,'ترتيب العناصر',str(exc))
+
+    def toggle_pick(self, point):
+        hits=[index for index,entry in enumerate(self.entries) if QRectF(*entry.rect).adjusted(-2,-2,2,2).contains(point)]
+        hits.sort(key=lambda index:(self.entries[index].kind!='text',self.entries[index].rect[2]*self.entries[index].rect[3]))
+        if not hits:return
+        item=self.objects.item(hits[0]);self.loading=True;item.setSelected(not item.isSelected());self.loading=False
+        self.object_selected()
+
     def rect(self):
         x, y, w, h = [spin.value() for spin in self.geometry]
         return QRectF(x*self.width/100, y*self.height/100, w*self.width/100, h*self.height/100)
@@ -438,8 +581,9 @@ class PageEditorDialog(QDialog):
         for entry in selected[1:]:
             bounds = bounds.united(QRectF(*entry.rect))
         text_entries = [entry for entry in selected if entry.kind == 'text']
+        only_text = len(text_entries) == len(selected)
         self.text.setPlainText(''.join(entry.text for entry in text_entries))
-        if text_entries:
+        if only_text:
             sample = text_entries[0]
             size = max(4, min(200, sample.size))
             self.size.setValue(size)
@@ -458,13 +602,17 @@ class PageEditorDialog(QDialog):
             # a complete newly shaped line. The exact box remains user-editable.
             bounds.setTop(max(0, bounds.top()-size*.25))
             bounds.setHeight(max(bounds.height(), size*1.9))
-            self.format_bar.show()
-        else:self.format_bar.hide()
+            self.reveal_bar(self.format_bar)
+            self.image_bar.hide();self.table_bar.hide()
+        else:
+            self.format_bar.hide();self.image_bar.setVisible(any(entry.kind=='image' for entry in selected));self.table_bar.hide()
         bounds = bounds.intersected(QRectF(0, 0, self.width, self.height))
         self.set_rect(bounds)
+        self._flow_base_rect = QRectF(bounds) if only_text and self.group_mode.currentData() == 'paragraph' else None
+        self._selection_base_rect = QRectF(bounds)
         self.status.setText(f'تم تحديد {len(selected)} عنصر. الاستبدال أو الحذف يخص العناصر المحددة فقط.')
         self.pending = False
-        if text_entries:
+        if only_text:
             self.open_direct_editor()
 
     def direct_pick(self, point):
@@ -487,7 +635,7 @@ class PageEditorDialog(QDialog):
         editor = QPlainTextEdit()
         editor.setPlainText(self.text.toPlainText())
         editor.setFrameStyle(0)
-        editor.setStyleSheet('QPlainTextEdit { background: rgba(255,255,255,238); border: 2px solid #c9343e; padding: 5px; selection-background-color: #ef9aa1; }')
+        editor.setStyleSheet('QPlainTextEdit { background: rgba(255,255,255,242); border: 2px solid #2f80ed; border-radius: 4px; padding: 5px; selection-background-color: #bcd8ff; }')
         proxy = self.canvas.scene().addWidget(editor)
         proxy.setGeometry(rect)
         proxy.setZValue(20)
@@ -504,10 +652,17 @@ class PageEditorDialog(QDialog):
         mini_size.setToolTip('حجم الخط'); mini_size.valueChanged.connect(self.size.setValue); floating_layout.addWidget(mini_size)
         mini_bold = QPushButton('B'); mini_bold.setCheckable(True); mini_bold.setChecked(self.bold.isChecked()); mini_bold.setMaximumWidth(36)
         mini_bold.setToolTip('خط عريض'); mini_bold.toggled.connect(self.bold.setChecked); floating_layout.addWidget(mini_bold)
+        mini_color=QComboBox();mini_color.setMaximumWidth(78);mini_color.setToolTip('لون النص')
+        for label,value in [('أسود','#172a32'),('أخضر','#087a63'),('أزرق','#174b91'),('أحمر','#b62432')]:mini_color.addItem(label,value)
+        current_color=mini_color.findData(self.color.currentData());mini_color.setCurrentIndex(max(0,current_color))
+        mini_color.currentIndexChanged.connect(lambda *_:self.color.setCurrentIndex(max(0,self.color.findData(mini_color.currentData()))))
+        floating_layout.addWidget(mini_color)
         mini_align = QComboBox(); mini_align.addItem('يمين','right'); mini_align.addItem('وسط','center'); mini_align.addItem('يسار','left')
         mini_align.setCurrentIndex(max(0,mini_align.findData(self.alignment.currentData())));mini_align.setToolTip('المحاذاة')
         mini_align.currentIndexChanged.connect(lambda *_:self.alignment.setCurrentIndex(max(0,self.alignment.findData(mini_align.currentData()))))
         floating_layout.addWidget(mini_align)
+        bullets=QPushButton('• قائمة');bullets.setToolTip('قائمة نقطية');bullets.clicked.connect(lambda:self.format_direct_list(False));floating_layout.addWidget(bullets)
+        numbers=QPushButton('1. قائمة');numbers.setToolTip('قائمة رقمية');numbers.clicked.connect(lambda:self.format_direct_list(True));floating_layout.addWidget(numbers)
         save = QPushButton('✓ تطبيق'); save.clicked.connect(self.apply_change); floating_layout.addWidget(save)
         cancel = QPushButton('إلغاء'); cancel.clicked.connect(self.discard_direct_edit); floating_layout.addWidget(cancel)
         toolbar_proxy = self.canvas.scene().addWidget(floating); toolbar_proxy.setZValue(21)
@@ -519,6 +674,20 @@ class PageEditorDialog(QDialog):
         editor.setFocus(); editor.selectAll()
         self.status.setText('عدّل النص في مكانه. انقر خارج المربع للحفظ تلقائيًا، أو استخدم Ctrl+Enter للتطبيق وEsc للإلغاء.')
 
+    def format_direct_list(self, numbered=False):
+        if self.direct_editor is None:return
+        lines=self.direct_editor.toPlainText().splitlines()
+        cleaned=[]
+        for index,line in enumerate(lines,1):
+            body=line.strip()
+            if not body:cleaned.append('');continue
+            if body.startswith('• '):body=body[2:]
+            else:
+                head,separator,tail=body.partition('. ')
+                if separator and head.isdigit():body=tail
+            cleaned.append((f'{index}. ' if numbered else '• ')+body)
+        self.direct_editor.setPlainText('\n'.join(cleaned));self.direct_editor.moveCursor(QTextCursor.MoveOperation.End)
+
     def direct_text_changed(self):
         if self._direct_sync or self.direct_editor is None:
             return
@@ -528,18 +697,29 @@ class PageEditorDialog(QDialog):
         self.mark_pending()
 
     def grow_direct_editor(self, size):
-        """Reflow the paragraph box while avoiding the next visible object."""
+        """Grow a paragraph, optionally reserving room to move following content."""
         if self.direct_proxy is None or self.direct_proxy.scene() is None:
             return
         rect = self.direct_proxy.geometry()
         wanted_height=max(self.size.value()*1.9,size.height()+14)
         selected=set(self.selected_indexes());bottom=self.height
+        flow = (self.flow_following.isChecked() and self.group_mode.currentData() == 'paragraph'
+                and self._flow_base_rect is not None)
+        candidates=[]
         for entry in self.entries:
             indexes=set(entry.indices or (entry.index,))
             if indexes & selected:continue
             other=QRectF(*entry.rect)
             horizontal=min(rect.right(),other.right())-max(rect.left(),other.left())
-            if horizontal>min(rect.width(),other.width())*.25 and other.top()>rect.top()+self.size.value():bottom=min(bottom,other.top()-5)
+            same_column=horizontal>min(rect.width(),other.width())*.25
+            below=(other.top()>=self._flow_base_rect.bottom()-1 if flow
+                   else other.top()>rect.top()+self.size.value())
+            if same_column and below:
+                if flow:candidates.append(other)
+                else:bottom=min(bottom,other.top()-5)
+        if flow and candidates:
+            available=max(0,self.height-max(other.bottom() for other in candidates))
+            bottom=min(self.height,self._flow_base_rect.bottom()+available)
         rect.setHeight(max(self.size.value()*1.9,min(wanted_height,bottom-rect.top())))
         self.direct_proxy.setGeometry(rect)
         self.set_rect(rect)
@@ -550,6 +730,17 @@ class PageEditorDialog(QDialog):
         font = QFont(self.font.currentFont())
         font.setPointSizeF(self.size.value()); font.setBold(self.bold.isChecked())
         self.direct_editor.setFont(font)
+        option = self.direct_editor.document().defaultTextOption()
+        option.setAlignment({'right': Qt.AlignmentFlag.AlignRight,
+                             'center': Qt.AlignmentFlag.AlignHCenter,
+                             'left': Qt.AlignmentFlag.AlignLeft}.get(
+                                 self.alignment.currentData(), Qt.AlignmentFlag.AlignLeading))
+        self.direct_editor.document().setDefaultTextOption(option)
+        color = QColor(self.color.currentData())
+        if color.isValid():
+            palette = self.direct_editor.palette()
+            palette.setColor(palette.ColorRole.Text, color)
+            self.direct_editor.setPalette(palette)
 
     def discard_direct_edit(self):
         if self.direct_editor is not None:
@@ -557,7 +748,7 @@ class PageEditorDialog(QDialog):
 
     def select_mode(self):
         self.clear_draft(); self.mode = 'select'; self.image = None
-        self.format_bar.hide()
+        self.format_bar.hide();self.image_bar.hide();self.table_bar.hide()
         self.status.setText('انقر عنصرًا، أو اسحب مستطيلًا حول النص لتحديد عدة عناصر.')
 
     def pick_region(self, rect):
@@ -580,7 +771,7 @@ class PageEditorDialog(QDialog):
             hits.sort(key=lambda i: (self.entries[i].kind != 'text', self.entries[i].rect[2]*self.entries[i].rect[3]))
             chosen = hits[:1]
         else:
-            chosen = [i for i, e in enumerate(self.entries) if e.kind == 'text' and rect.contains(QRectF(*e.rect).center())]
+            chosen = [i for i, e in enumerate(self.entries) if rect.contains(QRectF(*e.rect).center())]
         self.loading = True; self.objects.clearSelection()
         for index in chosen:
             self.objects.item(index).setSelected(True)
@@ -591,11 +782,65 @@ class PageEditorDialog(QDialog):
             self.delete_button.setEnabled(False); self.canvas.highlight(None)
             self.status.setText('لم يقع نص قابل للتعديل داخل التحديد. اختر «نص جديد» لإضافة نص هنا.')
 
+    def edit_full_page_text(self):
+        from io import BytesIO
+        from pypdf import PdfReader, PdfWriter
+
+        try:
+            source = self.make_change() if self.pending and self.draft is None else self.draft or self.data
+            original = extract_text(source).strip()
+            if not original:
+                QMessageBox.information(self, 'تحرير نص الصفحة', 'لا يوجد نص قابل للاستخراج. استخدم OCR أولًا للصفحات الممسوحة ضوئيًا.')
+                return
+            reader = PdfReader(BytesIO(source))
+            if reader.pages[0].get('/Annots'):
+                QMessageBox.information(self, 'تحرير نص الصفحة', 'تحتوي الصفحة على روابط أو تعليقات أو حقول. استخدم التحرير المباشر لتعديل النص على الصفحة.')
+                return
+            dialog = QDialog(self)
+            dialog.setWindowTitle('تحرير نص الصفحة كاملة')
+            dialog.resize(690, 540)
+            layout = QVBoxLayout(dialog)
+            note = QLabel('حرّر النص ثم أعد إنشاء الصفحة بالمقاس نفسه. في هذا الوضع تُستبدل الصفحة بتخطيط نصي جديد، وتُحذف الصور والجداول والتنسيقات الأصلية منها.')
+            note.setWordWrap(True)
+            layout.addWidget(note)
+            editor = QPlainTextEdit()
+            editor.setPlainText(original)
+            layout.addWidget(editor, 1)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setText('إعادة إنشاء الصفحة')
+            def rebuild():
+                revised = editor.toPlainText().strip()
+                if revised == original:
+                    dialog.reject()
+                    return
+                try:
+                    writer = PdfWriter()
+                    writer.add_blank_page(self.width, self.height)
+                    blank = BytesIO()
+                    writer.write(blank)
+                    margin = min(36, self.width * .08, self.height * .08)
+                    result = edit_page(blank.getvalue(), text=revised,
+                                       rect=(margin, margin, self.width-2*margin, self.height-2*margin),
+                                       family=self.font.currentFont().family(), size=self.size.value(),
+                                       auto_fit=False)
+                except ValueError as exc:
+                    QMessageBox.warning(dialog, 'تحرير نص الصفحة', str(exc))
+                    return
+                self.commit(result)
+                dialog.accept()
+            buttons.accepted.connect(rebuild)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            dialog.exec()
+        except Exception as exc:
+            QMessageBox.warning(self, 'تحرير نص الصفحة', str(exc))
+
     def new_text(self):
         self.clear_draft(); self.objects.clearSelection(); self.mode = 'text'; self.image = None
         self.text.clear(); self.size.setValue(16)
         self.set_rect(QRectF(self.width*.1, self.height*.1, self.width*.7, self.height*.12))
-        self.format_bar.show()
+        self.reveal_bar(self.format_bar)
+        self.image_bar.hide();self.table_bar.hide()
         self.status.setText('نص جديد: ارسم مكانه على الصفحة، واكتب النص ثم عاين التعديل.')
         self.open_direct_editor()
 
@@ -608,7 +853,7 @@ class PageEditorDialog(QDialog):
         if image.isNull():
             QMessageBox.warning(self, 'الصورة', 'تعذر قراءة الصورة.'); return
         self.clear_draft(); self.objects.clearSelection(); self.mode = 'image'; self.image = image;self.image_opacity=1;self.opacity.setValue(1)
-        self.format_bar.hide()
+        self.format_bar.hide();self.reveal_bar(self.image_bar);self.table_bar.hide()
         self.set_rect(QRectF(self.width*.1, self.height*.1, self.width*.4, self.height*.3))
         self.status.setText(f'الصورة: {Path(path).name}. ارسم مكانها ثم عاين التعديل؛ ستُحفظ نسبة أبعادها.')
 
@@ -621,11 +866,17 @@ class PageEditorDialog(QDialog):
         reader=QImageReader(path);reader.setAutoTransform(True);image=reader.read()
         if image.isNull():QMessageBox.warning(self,'الصورة','تعذر قراءة الصورة.');return
         self.clear_draft();self.mode='replace_image';self.image=image;self.image_opacity=1;self.opacity.setValue(1)
+        self.reveal_bar(self.image_bar)
         self.status.setText('تم اختيار الصورة البديلة. حرّك الإطار أو غيّر حجمه ثم اضغط «تطبيق على الصفحة».')
 
     def rotate_image(self):
         if self.image is None:
-            QMessageBox.information(self,'تدوير الصورة','أضف صورة أو اختر صورة بديلة أولًا.');return
+            indexes=self.selected_indexes()
+            if not indexes:QMessageBox.information(self,'تدوير العنصر','حدد صورة أو عنصرًا أولًا.');return
+            rect=self.rect()
+            try:self.commit(rotate_objects(self.data,indexes,(rect.x(),rect.y(),rect.width(),rect.height()),90))
+            except Exception as exc:QMessageBox.warning(self,'تدوير العنصر',str(exc))
+            return
         self.image=self.image.transformed(QTransform().rotate(90),Qt.TransformationMode.SmoothTransformation)
         self.mark_pending();self.status.setText('تم تدوير الصورة 90 درجة. عاينها أو طبّقها على الصفحة.')
 
@@ -653,13 +904,36 @@ class PageEditorDialog(QDialog):
         result=QImage(self.image.size(),QImage.Format.Format_ARGB32_Premultiplied);result.fill(Qt.GlobalColor.transparent)
         painter=QPainter(result);painter.setOpacity(self.image_opacity);painter.drawImage(0,0,self.image);painter.end();return result
 
+    def table_header_changed(self,value):
+        if self.mode in ('table','edit_table'):self.table_header=bool(value);self.mark_pending()
+
+    def table_rtl_changed(self,value):
+        if self.mode in ('table','edit_table'):self.table_rtl=bool(value);self.mark_pending()
+
+    def table_border_changed(self,value):
+        if self.mode in ('table','edit_table'):self.table_border_width=float(value);self.mark_pending()
+
+    def edit_table_values(self):
+        if self.mode not in ('table','edit_table') or not self.table_rows:return
+        dialog=TableEditorDialog(self.table_rows,self)
+        dialog.header.setChecked(self.table_header);dialog.rtl.setChecked(self.table_rtl);dialog.border_width.setValue(self.table_border_width)
+        if dialog.exec()!=QDialog.DialogCode.Accepted:return
+        self.table_rows=dialog.values();self.table_spans=dialog.spans();self.table_column_widths=dialog.column_widths();self.table_row_heights=dialog.row_heights()
+        self.table_header=dialog.header.isChecked();self.table_rtl=dialog.rtl.isChecked();self.table_border_width=dialog.border_width.value()
+        self.table_border_color=dialog.border_color.currentData();self.table_header_color=dialog.header_color.currentData()
+        self.table_header_quick.setChecked(self.table_header);self.table_rtl_quick.setChecked(self.table_rtl);self.table_border_quick.setValue(self.table_border_width)
+        self.mark_pending();self.status.setText('تم تحديث خلايا الجدول. غيّر حجمه على الورقة ثم اضغط تطبيق.')
+
     def new_table(self):
         dialog=TableEditorDialog(parent=self)
         if dialog.exec()!=QDialog.DialogCode.Accepted:return
         rows=dialog.values()
         self.clear_draft();self.objects.clearSelection();self.mode='table';self.image=None;self.table_rows=rows;self.table_indexes=[]
-        self.format_bar.hide()
+        self.format_bar.hide();self.image_bar.hide();self.reveal_bar(self.table_bar)
         self.table_header=dialog.header.isChecked();self.table_rtl=dialog.rtl.isChecked()
+        self.table_spans=dialog.spans();self.table_column_widths=dialog.column_widths();self.table_row_heights=dialog.row_heights()
+        self.table_border_color=dialog.border_color.currentData();self.table_border_width=dialog.border_width.value();self.table_header_color=dialog.header_color.currentData()
+        self.table_header_quick.setChecked(self.table_header);self.table_rtl_quick.setChecked(self.table_rtl);self.table_border_quick.setValue(self.table_border_width)
         self.set_rect(QRectF(self.width*.1,self.height*.15,self.width*.8,min(self.height*.6,max(80,len(rows)*35))))
         self.status.setText('اسحب لتحديد مساحة الجدول ثم عاينه. النص والخطوط ستبقى عناصر متجهة داخل PDF.')
 
@@ -671,29 +945,50 @@ class PageEditorDialog(QDialog):
         rows,indexes,bounds=inferred;dialog=TableEditorDialog(rows,self)
         if dialog.exec()!=QDialog.DialogCode.Accepted:return
         self.clear_draft();self.mode='edit_table';self.image=None;self.table_rows=dialog.values();self.table_indexes=indexes
-        self.format_bar.hide()
-        self.table_header=dialog.header.isChecked();self.table_rtl=dialog.rtl.isChecked();self.set_rect(QRectF(*bounds))
+        self.format_bar.hide();self.image_bar.hide();self.reveal_bar(self.table_bar)
+        self.table_header=dialog.header.isChecked();self.table_rtl=dialog.rtl.isChecked()
+        self.table_spans=dialog.spans();self.table_column_widths=dialog.column_widths();self.table_row_heights=dialog.row_heights()
+        self.table_border_color=dialog.border_color.currentData();self.table_border_width=dialog.border_width.value();self.table_header_color=dialog.header_color.currentData();self.set_rect(QRectF(*bounds))
+        self.table_header_quick.setChecked(self.table_header);self.table_rtl_quick.setChecked(self.table_rtl);self.table_border_quick.setValue(self.table_border_width)
         self.status.setText(f'تم التعرف على جدول من {len(rows)} صفوف. عدّل حجمه ثم اضغط «تطبيق على الصفحة».')
 
     def make_change(self):
         if self.mode=='table':
             rect=self.rect();return insert_table(self.data,(rect.x(),rect.y(),rect.width(),rect.height()),self.table_rows,
-                family=self.font.currentFont().family(),size=self.size.value(),header=self.table_header,rtl=self.table_rtl)
+                family=self.font.currentFont().family(),size=self.size.value(),header=self.table_header,rtl=self.table_rtl,
+                spans=self.table_spans,column_widths=self.table_column_widths,row_heights=self.table_row_heights,
+                border_color=self.table_border_color,border_width=self.table_border_width,header_color=self.table_header_color)
         if self.mode=='edit_table':
             rect=self.rect();return replace_table(self.data,self.table_indexes,(rect.x(),rect.y(),rect.width(),rect.height()),self.table_rows,
-                family=self.font.currentFont().family(),size=self.size.value(),header=self.table_header,rtl=self.table_rtl)
+                family=self.font.currentFont().family(),size=self.size.value(),header=self.table_header,rtl=self.table_rtl,
+                spans=self.table_spans,column_widths=self.table_column_widths,row_heights=self.table_row_heights,
+                border_color=self.table_border_color,border_width=self.table_border_width,header_color=self.table_header_color)
         indexes = self.selected_indexes() if self.mode in ('select','replace_image') else []
         if self.mode == 'select' and not indexes:
             raise ValueError('حدد نصًا لتعديله، أو اختر «نص جديد» أو «إضافة صورة».')
         if self.mode == 'select' and any(e.kind != 'text' for e in self.selected_entries()):
-            raise ValueError('لتغيير الصورة احذفها ثم أضف الصورة الجديدة. استبدال النص يتطلب تحديد نصوص فقط.')
+            if self._selection_base_rect is None:
+                raise ValueError('أعد تحديد العناصر قبل تحريكها.')
+            source=self._selection_base_rect;target=self.rect()
+            return transform_objects(self.data,indexes,
+                (source.x(),source.y(),source.width(),source.height()),
+                (target.x(),target.y(),target.width(),target.height()))
         rect = self.rect()
+        move_indexes=[];move_down=0.0
+        if (self.mode == 'select' and self.flow_following.isChecked()
+                and self.group_mode.currentData() == 'paragraph' and self._flow_base_rect is not None):
+            move_down=max(0.0,rect.bottom()-self._flow_base_rect.bottom())
+            if move_down>.01:
+                move_indexes=following_flow_indexes(inspect_page(self.data)[2],indexes,
+                    (self._flow_base_rect.x(),self._flow_base_rect.y(),self._flow_base_rect.width(),self._flow_base_rect.height()),
+                    move_down,self.height)
         return edit_page(self.data, indexes, text=None if self.mode in ('image','replace_image') else self.text.toPlainText(),
             image=self.processed_image() if self.mode in ('image','replace_image') else None,
             rect=(rect.x(), rect.y(), rect.width(), rect.height()), size=self.size.value(),
             family=self.font.currentFont().family(), color=self.color.currentData(), bold=self.bold.isChecked(),
             alignment=self.alignment.currentData(), selected_chars=self.selected_chars() if self.mode == 'select' else None,
-            auto_fit=self.auto_fit.isChecked())
+            auto_fit=self.auto_fit.isChecked() and move_down <= .01,
+            move_indexes=move_indexes, move_down=move_down)
 
     def preview_change(self):
         try:
