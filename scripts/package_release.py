@@ -10,7 +10,7 @@ release=root/'release';release.mkdir(exist_ok=True)
 version=__version__
 source=release/f'Vellora-{version}-source.zip'
 folders=['waraq','tests','scripts','docs','assets','examples','licenses','installer']
-files=['run.py','pyproject.toml','requirements.txt','requirements-build.txt','build.ps1','WaraqPDF.spec','README.md','LICENSE','THIRD_PARTY_NOTICES.md','CONTRIBUTING.md','SECURITY.md','.gitignore','.gitattributes']
+files=['run.py','pyproject.toml','requirements.txt','requirements-build.txt','build.ps1','WaraqPDF.spec','README.md','ROADMAP.md','LICENSE','THIRD_PARTY_NOTICES.md','CONTRIBUTING.md','SECURITY.md','.gitignore','.gitattributes']
 with zipfile.ZipFile(source,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as archive:
     for name in files:
         archive.write(root/name,'Vellora-source/'+name)

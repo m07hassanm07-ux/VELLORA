@@ -26,6 +26,9 @@ import pypdfium2 as pdfium
 from pypdf import PdfReader, PdfWriter
 
 from . import __version__
+from .updates import check_for_update
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
 from .core import Document, Overlay, PasswordRequired, atomic_write, parse_pages
 from .rendering import render_image, text_overlay, ensure_font_support
 from .printing import assemble_print_batch, paint_pdf, preview_sheet, PrintCancelled
@@ -1015,6 +1018,7 @@ class MainWindow(QMainWindow):
             (review,'note','إضافة ملاحظة','Ctrl+Shift+N',lambda:self.begin_review('note')),
             (review,'arrow','رسم سهم','',lambda:self.begin_review('arrow')),
             (review,'stamp','إضافة ختم','',lambda:self.begin_review('stamp')),
+            (help_menu, "updates", "التحقق من التحديثات…", "", self.show_updates),
             (help_menu, "about", "عن VELLORA…", "", self.about),
         ]:
             action = QAction(title, self)
@@ -2502,9 +2506,8 @@ class MainWindow(QMainWindow):
                 lambda report,cancelled:execute_workflow(paths,output,workflow,report,cancelled))
             self.statusBar().showMessage(f'اكتمل الإجراء «{name}»: تم إنشاء {len(results)} ملف.',15000)
             QMessageBox.information(self,'اكتمل الإجراء الدفعي',f'تم إنشاء {len(results)} ملف داخل:\n{output}')
-        except RuntimeError as exc:
-            if 'أُلغيت' in str(exc):self.statusBar().showMessage('أُلغيت العملية الدفعية.',8000)
-            else:self.error(exc)
+        except JobCancelled:
+            self.statusBar().showMessage('أُلغيت العملية الدفعية. تبقى الملفات المكتملة في مجلد النتائج.',8000)
         except Exception as exc:self.error(exc)
 
     def print_batch(self):
@@ -2591,6 +2594,23 @@ class MainWindow(QMainWindow):
         except JobCancelled:self.statusBar().showMessage(f'أُلغي التقسيم بعد إنشاء {len(written)} ملف مكتمل.',12000)
         except Exception as exc:
             self.error(f"توقف التقسيم بعد إنشاء {len(written)} ملف.\n{exc}", exc)
+
+    def show_updates(self):
+        title = 'تحديثات VELLORA'
+        try:
+            update = run_task(self, title, lambda report, cancelled: check_for_update(__version__))
+        except JobCancelled:
+            return
+        except Exception:
+            QMessageBox.warning(self, title, 'تعذّر التحقق من التحديثات. حاول مرة أخرى لاحقًا.')
+            return
+        if update is None:
+            QMessageBox.information(self, title, f'لا يوجد إصدار مستقر أحدث من {__version__}.')
+            return
+        version, url = update
+        if QMessageBox.question(self, title, f'الإصدار {version} متاح. هل تفتح صفحة الإصدار؟') == QMessageBox.StandardButton.Yes:
+            if not QDesktopServices.openUrl(QUrl(url)):
+                QMessageBox.information(self, title, url)
 
     def about(self):
         QMessageBox.about(self, "عن VELLORA", f"<h2>VELLORA · {__version__}</h2><p>Professional PDF Studio — تطبيق مستقل مفتوح المصدر لإدارة ملفات PDF محليًا.</p><p>كود التطبيق بترخيص MIT. المكتبات وبيانات OCR المرفقة لها تراخيصها الخاصة؛ راجع THIRD_PARTY_NOTICES وملفات التراخيص.</p><p>يدعم التحرير المباشر، وOCR عربي/إنجليزي، والبحث والنسخ، ومشروعات الاستعادة، وأدوات المراجعة.</p><p>VELLORA علامة مستقلة، ليست تابعة لـ Adobe ولا تستخدم كود Acrobat أو أدوات تفعيله.</p>")

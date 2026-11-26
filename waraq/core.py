@@ -83,7 +83,7 @@ def parse_pages(expression: str, total: int) -> list[int]:
     return result
 
 
-def atomic_write(path: Path | str, data: bytes) -> None:
+def atomic_write(path: Path | str, data: bytes, *, overwrite: bool = True) -> None:
     """Avoid truncating an existing file on a failed write."""
     path = Path(path)
     fd, temporary = tempfile.mkstemp(prefix=".waraq-", suffix=".tmp", dir=path.parent)
@@ -96,7 +96,12 @@ def atomic_write(path: Path | str, data: bytes) -> None:
         # on Windows. Keep the write atomic while tolerating that short lock.
         for attempt in range(8):
             try:
-                os.replace(temporary, path)
+                if overwrite:
+                    os.replace(temporary, path)
+                elif os.name == 'nt':
+                    os.rename(temporary, path)
+                else:
+                    os.link(temporary, path)
                 break
             except PermissionError:
                 if attempt == 7:

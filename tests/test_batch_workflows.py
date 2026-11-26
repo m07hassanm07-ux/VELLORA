@@ -23,6 +23,19 @@ def pdf_file(path, pages=1):
 
 
 class BatchWorkflowTests(unittest.TestCase):
+    def test_merge_never_replaces_source_or_previous_result(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'Report.pdf'
+            pdf_file(source)
+            original = source.read_bytes()
+            workflow = {'name': 'Report', 'merge': True}
+            first = execute_workflow([source], root, workflow)
+            second = execute_workflow([source], root, workflow)
+            self.assertEqual(first, [root / 'Report-2.pdf'])
+            self.assertEqual(second, [root / 'Report-3.pdf'])
+            self.assertEqual(source.read_bytes(), original)
+
     def test_workflows_roundtrip_validation_and_duplicate_rejection(self):
         with tempfile.TemporaryDirectory() as folder:
             target=Path(folder)/'workflows.json'

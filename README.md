@@ -1,5 +1,7 @@
 # VELLORA · Professional PDF Studio
 
+[Download for Windows](https://github.com/m07hassanm07-ux/VELLORA/releases/latest) · [Enterprise roadmap](ROADMAP.md)
+
 تطبيق سطح مكتب مستقل ومفتوح المصدر لإدارة ملفات PDF على جهازك. واجهة عربية من اليمين إلى اليسار، بلا حساب أو خادم أو رفع للمستندات.
 
 هذا مشروع جديد تمامًا: لا يحتوي على كود Adobe أو Acrobat أو ملفات التفعيل الخاصة بهما. كود التطبيق بترخيص **MIT** ويمكنك تعديله ونشره مع إبقاء إشعار الترخيص. المكتبات التابعة تحتفظ بتراخيصها كما هو موضح في `THIRD_PARTY_NOTICES.md`.

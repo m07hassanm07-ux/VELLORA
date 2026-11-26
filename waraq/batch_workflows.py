@@ -10,6 +10,7 @@ import re
 from pypdf import PdfReader, PdfWriter
 
 from .core import Overlay, atomic_write
+from .ocr import JobCancelled
 from .rendering import text_overlay
 
 
@@ -52,9 +53,27 @@ def _safe_name(path: Path) -> str:
     return re.sub(r'[^\w\-. ]','_',path.stem,flags=re.UNICODE).strip(' .') or 'document'
 
 
-def _process(reader: PdfReader, workflow: dict, start_number=1) -> tuple[PdfWriter,int]:
+def _save_result(directory, stem, data):
+    for number in range(1, 10001):
+        suffix = '' if number == 1 else f'-{number}'
+        target = directory / f'{stem}{suffix}.pdf'
+        try:
+            atomic_write(target, data, overwrite=False)
+            return target
+        except FileExistsError:
+            continue
+    raise ValueError('تعذر اختيار اسم متاح للملف الناتج.')
+
+
+def _check_cancelled(cancelled):
+    if cancelled and cancelled():
+        raise JobCancelled('أُلغيت العملية الدفعية.')
+
+
+def _process(reader: PdfReader, workflow: dict, start_number=1, cancelled=None) -> tuple[PdfWriter,int]:
     writer=PdfWriter();number=start_number
     for source in reader.pages:
+        _check_cancelled(cancelled)
         writer.add_page(source);page=writer.pages[-1]
         if workflow['rotation']:page.rotate(workflow['rotation'])
         labels=[]
@@ -76,16 +95,19 @@ def execute_workflow(paths, output_dir, workflow, progress=None, cancelled=None)
     if workflow['merge']:
         combined=PdfWriter();number=1
         for index,path in enumerate(sources,1):
-            if cancelled and cancelled():raise RuntimeError('أُلغيت العملية الدفعية.')
-            part,number=_process(PdfReader(path),workflow,number)
+            _check_cancelled(cancelled)
+            part,number=_process(PdfReader(path),workflow,number,cancelled)
             for page in part.pages:combined.add_page(page)
             if progress:progress(index,len(sources),path.name)
-        target=output_dir/(re.sub(r'[^\w\-. ]','_',workflow['name'])+'.pdf')
-        stream=BytesIO();combined.write(stream);combined.close();atomic_write(target,stream.getvalue());outputs.append(target)
+        stem = _safe_name(Path(workflow['name'].replace('/', '_').replace('\\', '_') + '.pdf'))
+        stream=BytesIO();combined.write(stream);combined.close()
+        _check_cancelled(cancelled)
+        outputs.append(_save_result(output_dir, stem, stream.getvalue()))
     else:
         for index,path in enumerate(sources,1):
-            if cancelled and cancelled():raise RuntimeError('أُلغيت العملية الدفعية.')
-            writer,_=_process(PdfReader(path),workflow,1);stream=BytesIO();writer.write(stream);writer.close()
-            target=output_dir/(_safe_name(path)+'-processed.pdf');atomic_write(target,stream.getvalue());outputs.append(target)
+            _check_cancelled(cancelled)
+            writer,_=_process(PdfReader(path),workflow,1,cancelled);stream=BytesIO();writer.write(stream);writer.close()
+            _check_cancelled(cancelled)
+            outputs.append(_save_result(output_dir, _safe_name(path)+'-processed', stream.getvalue()))
             if progress:progress(index,len(sources),path.name)
     return outputs
